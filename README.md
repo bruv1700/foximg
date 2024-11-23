@@ -34,13 +34,14 @@ foximg creates config files and other miscelanious files while running. I strong
 
 ## Supported Platforms
 
-| Windows | :heavy_check_mark: |
-| Linux   | ❔                  |
-| macOS   | ❔                  |
+| Windows            | Linux | macOS |
+|--------------------|-------|-------|
+| :heavy_check_mark: | ❔     | ❔     |
 
 # Goals of the Project
 
 foximg is in version 0.x. There's a lot of things missing until I believe it's stable or complete. I will try to actively use the issues page to document milestones and planned features.
+
 The general goals I want to accomplish with this app are for it to be:
 - Easy to use
 - Fast
