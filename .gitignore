@@ -1,0 +1,9 @@
+/.instance
+/target
+/logs
+
+*.kra
+
+Cargo.lock
+foximg_state.toml
+foximg_style.toml
