@@ -34,9 +34,9 @@ foximg creates config files and other miscelanious files while running. I strong
 
 ## Supported Platforms
 
-| Windows            | Linux | macOS |
-|--------------------|-------|-------|
-| :heavy_check_mark: | ❔     | ❔     |
+| Windows            | Linux              | macOS |
+|--------------------|--------------------|-------|
+| :heavy_check_mark: | :heavy_check_mark: | ❔     |
 
 # Goals of the Project
 
