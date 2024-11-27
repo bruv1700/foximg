@@ -679,10 +679,10 @@ impl Foximg<'_> {
             };
 
             match ext {
-                Some("png") | Some("bmp") | Some("tga") | Some("jpg") | Some("jpeg")
-                | Some("jpe") | Some("jif") | Some("jfif") | Some("jfi") | Some("dds")
-                | Some("hdr") | Some("ico") | Some("qoi") | Some("tiff") | Some("pgm")
-                | Some("pbm") | Some("ppm") | Some("pnm") | Some("exr") => {
+                Some("png") | Some("bmp") | Some("jpg") | Some("jpeg") | Some("jpe")
+                | Some("jif") | Some("jfif") | Some("jfi") | Some("dds") | Some("hdr")
+                | Some("ico") | Some("qoi") | Some("tiff") | Some("pgm") | Some("pbm")
+                | Some("ppm") | Some("pnm") | Some("exr") => {
                     push_image(FoximgImageTextureType::Static)
                 }
                 Some("webp") => push_image(FoximgImageTextureType::Webp(None)),
