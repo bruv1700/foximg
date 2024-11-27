@@ -9,7 +9,6 @@ Simple image viewer built in Rust using [Raylib](http://www.raylib.com/).
 - Support for:
     - PNG
     - Bitmaps
-    - TGA
     - JPEG
     - DDS
     - HDR
