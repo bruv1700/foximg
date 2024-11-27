@@ -429,7 +429,7 @@ impl FoximgImage {
         rl_thread: &RaylibThread,
         texture_context: Rc<RefCell<FoximgImageTexturesContext>>,
     ) {
-        if self.texture.is_init() {
+        if self.is_init() {
             return;
         }
 
@@ -472,6 +472,10 @@ impl FoximgImage {
 
     pub fn flip_vertical(&mut self) {
         self.height_mult = !self.height_mult;
+    }
+
+    pub fn is_init(&self) -> bool {
+        self.texture.is_init()
     }
 }
 
