@@ -720,7 +720,7 @@ impl Foximg<'_> {
         }
     }
 
-    pub(crate) fn load_img(&mut self, path: &Path) {
+    pub fn load_img(&mut self, path: &Path) {
         if !path.exists() {
             return self
                 .rl
