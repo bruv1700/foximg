@@ -418,7 +418,7 @@ pub struct Foximg<'imgs> {
 }
 
 impl Foximg<'_> {
-    pub fn init() -> Self {
+    pub fn init(quiet: bool) -> Self {
         std::panic::set_hook(Box::new(foximg_log::panic));
 
         let (instance, instance_err) = FoximgInstance::new();
@@ -433,6 +433,14 @@ impl Foximg<'_> {
             .resizable()
             .size(state.w, state.h)
             .title("foximg")
+            .log_level(if quiet {
+                TraceLogLevel::LOG_NONE
+            } else {
+                match cfg!(debug_assertions) {
+                    true => TraceLogLevel::LOG_ALL,
+                    false => TraceLogLevel::LOG_INFO,
+                }
+            })
             .build();
         let _ = rl.set_trace_log_callback(foximg_log::tracelog);
 
@@ -502,10 +510,6 @@ impl Foximg<'_> {
             rl.toggle_borderless_windowed();
         }
 
-        rl.set_trace_log(match cfg!(debug_assertions) {
-            true => TraceLogLevel::LOG_ALL,
-            false => TraceLogLevel::LOG_INFO,
-        });
         rl.set_exit_key(None);
         rl.set_target_fps(60);
 
@@ -683,12 +687,17 @@ impl Drop for Foximg<'_> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let arg = args.get(1).map(|path| path.as_str());
+    let mut arg = args.get(1).map(|path| path.as_str());
+    let mut quiet = false;
 
     if let Some("--help") = arg {
         foximg_help::show();
     } else {
-        let foximg = Foximg::init();
+        if let Some("--quiet") | Some("-q") = arg {
+            arg = args.get(2).map(|path| path.as_str());
+            quiet = true;
+        }
+        let foximg = Foximg::init(quiet);
         foximg.run(arg);
     }
 }
