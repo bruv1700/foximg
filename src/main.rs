@@ -690,7 +690,7 @@ fn main() {
     let mut arg = args.get(1).map(|path| path.as_str());
     let mut quiet = false;
 
-    if let Some("--help") = arg {
+    if let Some("--help") | Some("-h") = arg {
         foximg_help::show();
     } else {
         if let Some("--quiet") | Some("-q") = arg {
