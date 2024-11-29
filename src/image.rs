@@ -692,17 +692,11 @@ impl Foximg<'_> {
         }
 
         if !images.is_empty() {
-            if idx.is_none() {
-                idx = Some(unsafe {
-                    images
-                        .binary_search_by(cmp_img_paths)
-                        .unwrap_err_unchecked()
-                });
-            }
+            let idx = idx.unwrap_or_else(|| images.binary_search_by(cmp_img_paths).unwrap_err());
             self.images = Some(FoximgImages::new(
                 images,
                 folder,
-                unsafe { idx.unwrap_unchecked() },
+                idx,
                 &self.rl,
             ));
 
