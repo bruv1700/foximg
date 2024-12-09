@@ -423,11 +423,11 @@ impl Foximg<'_> {
 
         let (instance, instance_err) = FoximgInstance::new();
         let (state, state_err) = match instance.owner() {
-            Ok(true) => FoximgState::new(FoximgState::PATH),
+            Ok(true) => FoximgState::new(),
             Ok(false) => (FoximgState::default(), None),
             Err(e) => (FoximgState::default(), Some(e.into())),
         };
-        let (style, style_err) = FoximgStyle::new(FoximgStyle::PATH);
+        let (style, style_err) = FoximgStyle::new();
         let (mut rl, rl_thread) = raylib::init()
             .vsync()
             .resizable()
