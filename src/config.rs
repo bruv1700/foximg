@@ -53,35 +53,37 @@ impl From<toml::ser::Error> for FoximgConfigError {
 
 pub trait FoximgConfig
 where
-    Self: Sized + Default + Serialize + for<'de> Deserialize<'de>,
+    Self: Default + Serialize + for<'de> Deserialize<'de>,
 {
-    fn try_new(path: &str) -> Result<Self, FoximgConfigError> {
-        let file = fs::read_to_string(path)?;
+    const PATH: &'static str;
+
+    fn try_new() -> Result<Self, FoximgConfigError> {
+        let file = fs::read_to_string(Self::PATH)?;
         let settings: Self = toml::from_str(&file)?;
         Ok(settings)
     }
 
-    fn new(path: &str) -> (Self, Option<FoximgConfigError>) {
-        match Self::try_new(path) {
+    fn new() -> (Self, Option<FoximgConfigError>) {
+        match Self::try_new() {
             Ok(settings) => (settings, None),
             Err(e) => {
                 let settings = Self::default();
-                settings.to_file(path);
+                settings.to_file();
                 (settings, Some(e))
             }
         }
     }
 
-    fn try_to_file(&self, path: &str) -> Result<(), FoximgConfigError> {
+    fn try_to_file(&self) -> Result<(), FoximgConfigError> {
         let settings = toml::to_string(self)?;
-        let mut file = File::create(path)?;
+        let mut file = File::create(Self::PATH)?;
         write!(&mut file, "{settings}")?;
         Ok(())
     }
 
-    fn to_file(&self, path: &str) {
-        if let Err(e) = self.try_to_file(path) {
-            foximg_error::show(&format!("Couldn't create '{path}': {e:?}"));
+    fn to_file(&self) {
+        if let Err(e) = self.try_to_file() {
+            foximg_error::show(&format!("Couldn't create '{}': {e:?}", Self::PATH));
         }
     }
 }
@@ -108,11 +110,9 @@ impl Default for FoximgState {
     }
 }
 
-impl FoximgState {
-    pub const PATH: &str = "foximg_state.toml";
+impl FoximgConfig for FoximgState {
+    const PATH: &str = "foximg_state.toml";
 }
-
-impl FoximgConfig for FoximgState {}
 
 #[derive(Copy, Clone, Serialize)]
 #[repr(transparent)]
@@ -229,8 +229,6 @@ pub struct FoximgStyle {
 }
 
 impl FoximgStyle {
-    pub const PATH: &str = "foximg_style.toml";
-
     fn update_titlebar(&self, rl: &mut RaylibHandle) {
         #[cfg(windows)]
         self.update_titlebar_win32(rl);
@@ -392,7 +390,9 @@ impl Default for FoximgStyle {
     }
 }
 
-impl FoximgConfig for FoximgStyle {}
+impl FoximgConfig for FoximgStyle {
+    const PATH: &str = "foximg_style.toml";
+}
 
 #[cfg(windows)]
 mod foximg_style_win32 {
@@ -511,6 +511,6 @@ impl Foximg<'_> {
             Some((position.x as i32, position.y as i32))
         };
 
-        self.state.to_file(FoximgState::PATH);
+        self.state.to_file();
     }
 }
