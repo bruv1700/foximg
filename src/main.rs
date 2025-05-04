@@ -1,703 +1,706 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fmt::Debug,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
+    str::Chars, time::Duration,
 };
 
-use config::{FoximgConfig, FoximgConfigError, FoximgState, FoximgStyle};
-use image::{FoximgImage, FoximgImages, ScaleMult};
+use config::{FoximgConfig, FoximgSettings, FoximgState, FoximgStyle};
+use images::FoximgImages;
 use menu::FoximgMenu;
 use raylib::prelude::*;
 use resources::FoximgResources;
 
 mod config;
-mod foximg_error;
-pub mod foximg_help;
+mod controls;
 mod foximg_log;
-mod image;
+mod images;
 mod menu;
 mod resources;
 
-#[derive(Default)]
 struct FoximgInstance {
-    path: Option<PathBuf>,
+    path: PathBuf,
+    update_counter: Option<f32>,
 }
 
 impl FoximgInstance {
-    const INSTANCE: &str = "./.instance";
+    /// 6 hours - 1 second
+    const UPDATE_DELAY: f32 = Duration::from_secs(3600 * 6 - 1).as_secs_f32();
 
-    fn instance_count() -> io::Result<usize> {
-        Ok(fs::read_dir(Self::INSTANCE)?.count())
+    #[inline(always)]
+    fn instance_path_current_exe(name: &str) -> io::Result<PathBuf> {
+        let mut path = std::env::current_exe()?;
+
+        path.pop();
+        path.push(name);
+        Ok(path)
     }
 
-    fn try_new() -> io::Result<Self> {
-        if !fs::exists(Self::INSTANCE)? {
-            fs::create_dir(Self::INSTANCE)?;
+    fn instances_path_env(rl: Option<&mut RaylibHandle>, env: Result<PathBuf, std::env::VarError>) -> io::Result<PathBuf> {
+        const INSTANCES_FOLDER_NO_RUNTIME_DIR: &str = if cfg!(target_os = "windows") {
+            "instances"
+        } else {
+            ".foximg_instances"
+        };
+
+        if cfg!(debug_assertions) {
+            return Self::instance_path_current_exe("instances");
         }
 
-        let mut instances = Self::instance_count()?;
+        let Ok(mut runtime) = env else {
+            if let Some(rl) = rl {
+                rl.trace_log(
+                    TraceLogLevel::LOG_WARNING, 
+                    "FOXIMG: \"XDG_RUNTIME_DIR\" enviroment variable not set. Using instance folder in executable's directory"
+                );
+            }
+            return Self::instance_path_current_exe(INSTANCES_FOLDER_NO_RUNTIME_DIR);
+        };
+
+        runtime.push("foximg/instances");
+        Ok(runtime)
+    }
+
+    pub fn instances_path() -> io::Result<PathBuf> {
+        Self::instances_path_env(None, std::env::var("XDG_RUNTIME_DIR").map(|path| path.into()))
+    }
+
+    fn instance_count(instances_path: impl AsRef<Path>) -> io::Result<usize> {
+        Ok(fs::read_dir(instances_path)?.count())
+    }
+
+    fn try_new(rl: &mut RaylibHandle) -> io::Result<Self> {
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").map(|path| path.into());
+        let update_counter = runtime_dir.as_ref().map(|_| Self::UPDATE_DELAY).ok();
+        let instances_path = Self::instances_path_env(Some(rl), runtime_dir)?;
+
+        if !fs::exists(&instances_path)? {
+            fs::create_dir_all(&instances_path)?;
+        }
+
+        let mut instances = Self::instance_count(&instances_path)?;
         let path = loop {
-            let new_instance = format!("{instances}");
-            let path = Path::new(Self::INSTANCE).join(new_instance);
+            let new_instance = instances.to_string();
+            let path = instances_path.join(new_instance);
             if !path.exists() {
                 break path;
             }
             instances += 1;
         };
+
         File::create(&path)?;
-        Ok(Self { path: Some(path) })
+        Ok(Self { path, update_counter })
     }
 
-    pub fn new() -> (Self, Option<io::Error>) {
-        match Self::try_new() {
-            Ok(instance) => (instance, None),
-            Err(e) => (Self::default(), Some(e)),
+    pub fn new(rl: &mut RaylibHandle) -> Option<Self> {
+        match Self::try_new(rl) {
+            Ok(instance) => {
+                rl.trace_log(
+                    TraceLogLevel::LOG_INFO,
+                    &format!("FOXIMG: Created instance marker {:?}", instance.path),
+                );
+                Some(instance)
+            }
+            Err(e) => {
+                rl.trace_log(
+                    TraceLogLevel::LOG_WARNING,
+                    "FOXIMG: Failed to create instance marker:",
+                );
+                rl.trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+                None
+            }
         }
-    }
-
-    pub fn path(&self) -> Option<&PathBuf> {
-        self.path.as_ref()
     }
 
     pub fn owner(&self) -> io::Result<bool> {
-        Ok(Self::instance_count()? == 1)
+        Ok(Self::instance_count(Self::instances_path()?)? == 1)
     }
-}
 
-impl Drop for FoximgInstance {
-    fn drop(&mut self) {
-        if let Some(ref path) = self.path {
-            let try_drop = || {
-                fs::remove_file(path)?;
-                if Self::instance_count()? == 0 {
-                    fs::remove_dir(Self::INSTANCE)?;
-                }
-                io::Result::Ok(())
-            };
-            if let Err(e) = try_drop() {
-                foximg_error::show(&format!("Couldn't delete {path:?}:\n - {e}"));
+    fn try_update(&mut self) -> io::Result<()> {
+        let file = OpenOptions::new().write(true).open(&self.path)?;
+        let now = fs::FileTimes::new().set_accessed(std::time::SystemTime::now());
+        file.set_times(now)?;
+        Ok(())
+    }
+
+    pub fn update(&mut self, rl: &RaylibHandle) {
+        let Some(ref mut update_counter) = self.update_counter else {
+            return;
+        };
+
+        *update_counter -= rl.get_frame_time();
+        if *update_counter <= 0. {
+            *update_counter = Self::UPDATE_DELAY;
+
+            if let Err(e) = self.try_update() {
+                rl.trace_log(
+                    TraceLogLevel::LOG_WARNING, 
+                    &format!("FOXIMG: Failed to modify access time timestamp of {:?}:", self.path
+                ));
+                rl.trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+            } else {
+                rl.trace_log(
+                    TraceLogLevel::LOG_DEBUG, 
+                    &format!("FOXIMG: Modified access time timestamp of {:?}", self.path
+                ));
             }
+        }
+    }
+
+    fn try_delete(&self) -> io::Result<()> {
+        let instances_path = Self::instances_path()?;
+
+        fs::remove_file(&self.path)?;
+        if Self::instance_count(&instances_path)? == 0 {
+            fs::remove_dir(instances_path)?;
+        }
+        Ok(())
+    }
+
+    pub fn delete(self, rl: &RaylibHandle) {
+        if let Err(e) = self.try_delete() {
+            rl.trace_log(
+                TraceLogLevel::LOG_WARNING,
+                "FOXIMG: Failed to delete instance marker:",
+            );
+            rl.trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+        } else {
+            rl.trace_log(
+                TraceLogLevel::LOG_INFO,
+                &format!("FOXIMG: Deleted instance marker: {:?}", self.path),
+            );
         }
     }
 }
 
-#[derive(Debug)]
+/// Represents the bounds of the side buttons that traverse the loaded image gallery on a current frame.
+/// This struct holds just enough data to extrapolate the exact dimensions of each button.
+///
+/// It also holds information regarding the state of the current mouse position in relation to the
+/// buttons: whether the mouse is hovering over either the left or right button.
+#[derive(Default, Clone, Copy)]
 struct FoximgBtnsBounds {
-    mouse_pos: Vector2,
-    left: f32,
-    right: f32,
-    mouse_pos_left: bool,
-    mouse_pos_right: bool,
+    btn_width: f32,
+    btn_height: f32,
+    right_btn_x: f32,
+    mouse_on_left_btn: bool,
+    mouse_on_right_btn: bool,
 }
 
 impl FoximgBtnsBounds {
-    pub fn new(rl: &RaylibHandle) -> Self {
-        let mouse_pos = rl.get_mouse_position();
-        let left = rl.get_screen_width().as_f32() / 6.;
-        let right = rl.get_screen_width().as_f32() - left;
-        let mouse_pos_left = mouse_pos.x < left;
-        let mouse_pos_right = mouse_pos.x > right;
+    /// Constructs a new `FoximgBtnsBounds`. Takes in a [`RaylibHandle`] to calculate the width of
+    /// the buttons based on the window's width, and a [`Vector2`] of the mouse's current position.
+    /// Get the mouse position using [`get_mouse_position`].
+    ///
+    /// [`get_mouse_position`]: raylib::core::window::RaylibHandle::get_mouse_position
+    pub fn new(rl: &RaylibHandle, mouse_pos: Vector2) -> Self {
+        let window_width = rl.get_screen_width().as_f32();
+        let window_height = rl.get_screen_height().as_f32();
+        let btn_width = window_width / 6.;
+        let right_btn_x = window_width - btn_width;
+        let mouse_on_left_btn = mouse_pos.x < btn_width;
+        let mouse_on_right_btn = mouse_pos.x > right_btn_x;
+
         Self {
-            mouse_pos,
-            left,
-            right,
-            mouse_pos_left,
-            mouse_pos_right,
+            btn_height: window_height,
+            btn_width,
+            right_btn_x,
+            mouse_on_left_btn,
+            mouse_on_right_btn,
         }
     }
 
-    fn mouse_pos(&self) -> Vector2 {
-        self.mouse_pos
+    pub const fn left_btn(&self) -> Rectangle {
+        Rectangle::new(0., 0., self.btn_width, self.btn_height)
     }
 
-    pub fn left(&self) -> f32 {
-        self.left
+    pub const fn right_btn(&self) -> Rectangle {
+        Rectangle::new(self.right_btn_x, 0., self.btn_width, self.btn_height)
     }
 
-    pub fn right(&self) -> f32 {
-        self.right
+    /// Returns whether the mouse is hovering over the left button.
+    pub fn mouse_on_left_btn(&self) -> bool {
+        self.mouse_on_left_btn
     }
 
-    pub fn mouse_pos_left(&self) -> bool {
-        self.mouse_pos_left
-    }
-
-    pub fn mouse_pos_right(&self) -> bool {
-        self.mouse_pos_right
+    /// Returns whether the mouse is hovering over the right button.
+    pub fn mouse_on_right_btn(&self) -> bool {
+        self.mouse_on_right_btn
     }
 }
 
-struct FoximgDraw<'a, 'imgs> {
+/// Represents a foximg frame that can be be drawn to.
+struct FoximgDraw<'a> {
     d: RaylibDrawHandle<'a>,
-    style: &'a mut FoximgStyle,
+    style: &'a FoximgStyle,
+    state: &'a FoximgState,
+    resources: &'a FoximgResources,
     mouse_wheel: &'a mut f32,
     camera: &'a mut Camera2D,
-    resources: &'a FoximgResources,
-    images: &'a mut Option<FoximgImages<'imgs>>,
-    bounds: FoximgBtnsBounds,
+    rl_thread: &'a RaylibThread,
+    btn_bounds: FoximgBtnsBounds,
 }
 
-impl<'a, 'imgs> FoximgDraw<'a, 'imgs> {
-    pub fn new_with_bounds(foximg: &'a mut Foximg<'imgs>, bounds: FoximgBtnsBounds) -> Self {
-        let d = foximg.rl.begin_drawing(&foximg.rl_thread);
-        Self {
-            d,
-            style: &mut foximg.style,
-            mouse_wheel: &mut foximg.mouse_wheel,
-            camera: &mut foximg.camera,
-            resources: &foximg.resources,
-            images: &mut foximg.images,
-            bounds,
-        }
-    }
+impl<'a> FoximgDraw<'a> {
+    pub fn draw_large_centered_text(&mut self, text: &str) {
+        const FONT_SIZE: f32 = 32.;
+        const FONT_SPACING: f32 = resources::yudit_spacing(FONT_SIZE);
 
-    pub fn new(foximg: &'a mut Foximg<'imgs>) -> Self {
-        let bounds = FoximgBtnsBounds::new(&foximg.rl);
-        Self::new_with_bounds(foximg, bounds)
-    }
+        let screen_width = self.d.get_screen_width() as f32;
+        let screen_height = self.d.get_screen_height() as f32;
+        let yudit = &self.resources.yudit;
+        let text_width = yudit.measure_text(text, FONT_SIZE, FONT_SPACING).x;
 
-    fn draw_img_symbols(&mut self) {
-        if let Some(images) = self.images {
-            /// Length of the flip texture
-            const SYMBOL_SIDE: i32 = 64;
-            const SYMBOL_PAD: i32 = 10;
-
-            if images.get().width_mult == ScaleMult::Inverted {
-                self.d.draw_texture(
-                    self.resources.flip_h(),
-                    SYMBOL_PAD,
-                    self.d.get_screen_height() - SYMBOL_PAD - SYMBOL_SIDE,
-                    self.style.accent,
-                );
-            }
-            if images.get().height_mult == ScaleMult::Inverted {
-                self.d.draw_texture(
-                    self.resources.flip_v(),
-                    if images.get().width_mult == ScaleMult::Inverted {
-                        SYMBOL_PAD * 2 + SYMBOL_SIDE
-                    } else {
-                        SYMBOL_PAD
-                    },
-                    self.d.get_screen_height() - SYMBOL_PAD - SYMBOL_SIDE,
-                    self.style.accent,
-                );
-            }
-
-            if images.get().rotation != 0. {
-                let text = format!("{}", images.get().rotation);
-                let text_size = self.d.measure_text(&text, SYMBOL_SIDE);
-
-                self.d.draw_text(
-                    &text,
-                    self.d.get_screen_width() - SYMBOL_PAD * 2 - text_size,
-                    self.d.get_screen_height() - SYMBOL_PAD - SYMBOL_SIDE,
-                    SYMBOL_SIDE,
-                    self.style.accent,
-                );
-            }
-        }
-    }
-
-    pub fn draw_img(&mut self, enable_zoom: bool) {
-        self.d.clear_background(self.style.bg);
-        if let Some(images) = self.images {
-            images.get_mut().update();
-
-            let screen_width = self.d.get_screen_width().as_f32();
-            let screen_height = self.d.get_screen_height().as_f32();
-            let scale = {
-                let screen_ratio = screen_width / screen_height;
-                let texture_ratio = images.get().width().as_f32() / images.get().height().as_f32();
-
-                if screen_ratio > texture_ratio {
-                    screen_height / images.get().height().as_f32()
-                } else {
-                    screen_height / images.get().width().as_f32()
-                }
-            };
-            let mouse_wheel = self.d.get_mouse_wheel_move();
-
-            if mouse_wheel != 0.
-                && enable_zoom
-                && !((mouse_wheel < 0. && *self.mouse_wheel < 0.)
-                    || (mouse_wheel > 0. && *self.mouse_wheel >= 25.))
-            {
-                let mouse_world_pos = self
-                    .d
-                    .get_screen_to_world2D(self.bounds.mouse_pos(), *self.camera);
-
-                self.camera.offset = self.bounds.mouse_pos();
-                self.camera.target = mouse_world_pos;
-                self.camera.zoom += mouse_wheel * 0.25;
-
-                if self.camera.zoom < 0.25 {
-                    self.camera.zoom = 0.25;
-                }
-
-                *self.mouse_wheel += mouse_wheel;
-            }
-
-            fn draw_img_generic_mode<D>(
-                d: &mut D,
-                img: &FoximgImage,
-                screen_width: f32,
-                screen_height: f32,
-                scale: f32,
-            ) where
-                D: RaylibDraw,
-            {
-                d.draw_texture_pro(
-                    img,
-                    Rectangle {
-                        x: 0.,
-                        y: 0.,
-                        width: img.width().as_f32() * img.width_mult.as_f32(),
-                        height: img.height().as_f32() * img.height_mult.as_f32(),
-                    },
-                    Rectangle {
-                        x: screen_width / 2.,
-                        y: screen_height / 2.,
-                        width: img.width().as_f32() * scale,
-                        height: img.height().as_f32() * scale,
-                    },
-                    Vector2::new((img.width().as_f32()) / 2., (img.height().as_f32()) / 2.) * scale,
-                    img.rotation,
-                    Color::WHITE,
-                );
-            }
-
-            if *self.mouse_wheel > 0. {
-                if self.bounds.mouse_pos().x >= self.bounds.left()
-                    && self.bounds.mouse_pos().x <= self.bounds.right()
-                    && self.d.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT)
-                    && enable_zoom
-                {
-                    let mut delta = self.d.get_mouse_delta();
-                    delta.scale(-1. / scale);
-                    self.camera.target += delta;
-                }
-
-                let mut c = self.d.begin_mode2D(*self.camera);
-                draw_img_generic_mode(&mut c, images.get(), screen_width, screen_height, scale);
-            } else {
-                draw_img_generic_mode(
-                    &mut self.d,
-                    images.get(),
-                    screen_width,
-                    screen_height,
-                    scale,
-                );
-                self.camera.offset = Vector2::default();
-                self.camera.target = Vector2::default();
-            }
-        }
-
-        self.draw_img_symbols();
-    }
-
-    pub fn draw_btns(&mut self) {
-        if let Some(images) = self.images {
-            if self.bounds.mouse_pos_left() && images.can_dec() {
-                self.d
-                    .set_mouse_cursor(MouseCursor::MOUSE_CURSOR_POINTING_HAND);
-                self.d.draw_texture_pro(
-                    self.resources.grad_l(),
-                    Rectangle {
-                        x: 0.,
-                        y: 0.,
-                        width: self.resources.grad_l().width().as_f32(),
-                        height: self.resources.grad_l().height().as_f32(),
-                    },
-                    Rectangle {
-                        x: 0.,
-                        y: 0.,
-                        width: self.bounds.left(),
-                        height: self.d.get_screen_height().as_f32(),
-                    },
-                    Vector2 { x: 0., y: 0. },
-                    0.,
-                    self.style.accent,
-                );
-            } else if self.bounds.mouse_pos_right() && images.can_inc() {
-                self.d
-                    .set_mouse_cursor(MouseCursor::MOUSE_CURSOR_POINTING_HAND);
-                self.d.draw_texture_pro(
-                    self.resources.grad_r(),
-                    Rectangle {
-                        x: 0.,
-                        y: 0.,
-                        width: self.resources.grad_r().width().as_f32(),
-                        height: self.resources.grad_r().height().as_f32(),
-                    },
-                    Rectangle {
-                        x: self.bounds.right(),
-                        y: 0.,
-                        width: self.bounds.left(),
-                        height: self.d.get_screen_height().as_f32(),
-                    },
-                    Vector2 { x: 0., y: 0. },
-                    0.,
-                    self.style.accent,
-                );
-            } else {
-                self.d.set_mouse_cursor(MouseCursor::MOUSE_CURSOR_ARROW);
-            }
-        }
-    }
-
-    pub fn draw_gradient(&mut self) {
-        self.d.draw_rectangle(
-            0,
-            0,
-            self.d.get_screen_width(),
-            self.d.get_screen_height(),
+        self.d.draw_text_ex(
+            yudit,
+            text,
+            rvec2(
+                screen_width / 2. - text_width / 2.,
+                screen_height / 2. - FONT_SIZE / 2.,
+            ),
+            FONT_SIZE,
+            FONT_SPACING,
             self.style.accent,
         );
     }
 
-    fn draw_panel(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        const PANEL_BORDER_WIDTH: i32 = 2;
+    pub fn draw_current_img(&mut self, images: &mut FoximgImages) {
+        let Some(img) = images.img_get(&mut self.d, self.rl_thread) else {
+            self.draw_large_centered_text(":(");
+            return;
+        };
 
-        fn color(d: &RaylibDrawHandle, property: GuiDefaultProperty) -> Color {
-            Color::get_color(d.gui_get_style(GuiControl::DEFAULT, property as i32) as u32)
+        img.borrow_mut().update_texture(&self.d);
+        let img = img.borrow();
+
+        let screen_width = self.d.get_screen_width().as_f32();
+        let screen_height = self.d.get_screen_height().as_f32();
+        let scale = {
+            let screen_ratio = screen_width / screen_height;
+            let texture_ratio = img.width().as_f32() / img.height().as_f32();
+
+            if screen_ratio > texture_ratio {
+                screen_height / img.height().as_f32()
+            } else {
+                screen_height / img.width().as_f32()
+            }
+        };
+
+        if *self.mouse_wheel > 0. {
+            let mut c = self.d.begin_mode2D(*self.camera);
+            img.draw_center_scaled(&mut c, screen_width, screen_height, scale);
+        } else {
+            *self.camera = Camera2D {
+                zoom: 1.,
+                ..Default::default()
+            };
+            img.draw_center_scaled(&mut self.d, screen_width, screen_height, scale);
         }
+        img.draw_manipulation_info(
+            &mut self.d,
+            self.resources,
+            self.style,
+            screen_width,
+            screen_height,
+        );
 
-        self.d.draw_rectangle(
-            x,
-            y,
-            width,
-            height,
-            color(&self.d, GuiDefaultProperty::BACKGROUND_COLOR),
-        );
-        self.d.draw_rectangle(
-            x,
-            y,
-            width,
-            PANEL_BORDER_WIDTH,
-            color(&self.d, GuiDefaultProperty::LINE_COLOR),
-        );
-        self.d.draw_rectangle(
-            x,
-            y + PANEL_BORDER_WIDTH,
-            PANEL_BORDER_WIDTH,
-            height - 2 * PANEL_BORDER_WIDTH,
-            color(&self.d, GuiDefaultProperty::LINE_COLOR),
-        );
-        self.d.draw_rectangle(
-            x + width - PANEL_BORDER_WIDTH,
-            y + PANEL_BORDER_WIDTH,
-            PANEL_BORDER_WIDTH,
-            height - 2 * PANEL_BORDER_WIDTH,
-            color(&self.d, GuiDefaultProperty::LINE_COLOR),
-        );
-        self.d.draw_rectangle(
-            x,
-            y + height - PANEL_BORDER_WIDTH,
-            width,
-            PANEL_BORDER_WIDTH,
-            color(&self.d, GuiDefaultProperty::LINE_COLOR),
-        );
+        if self.state.fullscreen {
+            const FONT_SIZE: f32 = 16.;
+            const FONT_SPACING: f32 = resources::yudit_spacing(FONT_SIZE);
+
+            self.d.draw_text_ex(
+                &self.resources.yudit, 
+                &images.img_path().to_string_lossy(), 
+                rvec2(10, 10), 
+                FONT_SIZE, 
+                FONT_SPACING, 
+                self.style.accent
+            );
+            self.d.draw_text_ex(
+                &self.resources.yudit, 
+                &images.img_current_string(), 
+                rvec2(10, 10. + FONT_SIZE), 
+                FONT_SIZE, 
+                FONT_SPACING, 
+                self.style.accent
+            );
+        }
+    }
+
+    fn draw_btns(&mut self, images: &mut FoximgImages) {
+        if self.btn_bounds.mouse_on_left_btn() && images.can_dec() {
+            self.d.draw_texture_pro(
+                &self.resources.grad,
+                rrect(
+                    0,
+                    0,
+                    self.resources.grad.width(),
+                    self.resources.grad.height(),
+                ),
+                self.btn_bounds.left_btn(),
+                rvec2(0, 0),
+                0.,
+                self.style.accent,
+            );
+        } else if self.btn_bounds.mouse_on_right_btn() && images.can_inc() {
+            self.d.draw_texture_pro(
+                &self.resources.grad,
+                rrect(
+                    0,
+                    0,
+                    -self.resources.grad.width(),
+                    self.resources.grad.height(),
+                ),
+                self.btn_bounds.right_btn(),
+                rvec2(0, 0),
+                0.,
+                self.style.accent,
+            );
+        }
+    }
+
+    pub fn begin(
+        foximg: &'a mut Foximg,
+        f: impl FnOnce(FoximgDraw<'a>, Option<&'a mut FoximgImages>),
+    ) {
+        let d = foximg.rl.begin_drawing(&foximg.rl_thread);
+        let mut d = Self {
+            d,
+            style: &foximg.style,
+            state: &foximg.state,
+            resources: &foximg.resources,
+            mouse_wheel: &mut foximg.mouse_wheel,
+            camera: &mut foximg.camera,
+            rl_thread: &foximg.rl_thread,
+            btn_bounds: foximg.btn_bounds,
+        };
+        d.d.clear_background(foximg.style.bg);
+        f(d, foximg.images.as_mut());
     }
 }
 
-pub struct Foximg<'imgs> {
-    state: FoximgState,
+struct Foximg {
     style: FoximgStyle,
-    rl: RaylibHandle,
-    rl_thread: RaylibThread,
-    fullscreen: bool,
+    state: FoximgState,
+    settings: FoximgSettings,
+    resources: FoximgResources,
+    images: Option<FoximgImages>,
+
+    mouse_pos: Vector2,
+    btn_bounds: FoximgBtnsBounds,
     mouse_wheel: f32,
     camera: Camera2D,
-    resources: FoximgResources,
-    images: Option<FoximgImages<'imgs>>,
-    should_exit: bool,
-    instance: FoximgInstance,
+
+    rl: RaylibHandle,
+    rl_thread: RaylibThread,
+    instance: Option<FoximgInstance>,
 }
 
-impl Foximg<'_> {
-    pub fn init(quiet: bool) -> Self {
-        std::panic::set_hook(Box::new(foximg_log::panic));
+impl Foximg {
+    pub const TITLE: &str = if cfg!(debug_assertions) {
+        concat!("foximg ", env!("CARGO_PKG_VERSION"), " [DEBUG BUILD]")
+    } else {
+        concat!("foximg ", env!("CARGO_PKG_VERSION"))
+    };
 
-        let (instance, instance_err) = FoximgInstance::new();
-        let (state, state_err) = match instance.owner() {
-            Ok(true) => FoximgState::new(),
-            Ok(false) => (FoximgState::default(), None),
-            Err(e) => (FoximgState::default(), Some(e.into())),
-        };
-        let (style, style_err) = FoximgStyle::new();
+    pub fn init(verbose: bool) -> Self {
+        // SAFETY: As of raylib-rs 5.5.1, this always returns Ok.
+        callbacks::set_trace_log_callback(foximg_log::tracelog).unwrap();
+
         let (mut rl, rl_thread) = raylib::init()
             .vsync()
             .resizable()
-            .size(state.w, state.h)
-            .title("foximg")
-            .log_level(if quiet {
-                TraceLogLevel::LOG_NONE
+            .title(Self::TITLE)
+            .log_level(if verbose {
+                TraceLogLevel::LOG_ALL
             } else {
-                match cfg!(debug_assertions) {
-                    true => TraceLogLevel::LOG_ALL,
-                    false => TraceLogLevel::LOG_INFO,
-                }
+                TraceLogLevel::LOG_INFO
             })
             .build();
-        let _ = rl.set_trace_log_callback(foximg_log::tracelog);
-
-        match instance_err {
-            Some(e) => rl.trace_log(
-                TraceLogLevel::LOG_WARNING,
-                &format!("FOXIMG: Couldn't create instance file:\n - {e}"),
-            ),
-            None => {
-                if let Some(path) = instance.path() {
-                    rl.trace_log(
-                        TraceLogLevel::LOG_INFO,
-                        &format!("FOXIMG: Created instance file '{path:?}' successfully"),
-                    )
-                }
-            }
-        }
-        match state_err {
-            Some(e) => {
-                rl.trace_log(
-                    TraceLogLevel::LOG_WARNING,
-                    &format!("FOXIMG: Error loading '{}':", FoximgState::PATH),
-                );
-
-                let err = format!(" - {e:?}");
-                // Using println instead of the tracelog because of the maximum character limit imposed
-                // by raylib.
-                println!("{err}");
-                foximg_log::push(&err);
-            }
-            None => rl.trace_log(
-                TraceLogLevel::LOG_INFO,
-                &format!("FOXIMG: '{}' loaded successfully", FoximgState::PATH),
-            ),
-        }
-        match style_err {
-            Some(e) => {
-                let err_header = format!("Error loading '{}':", FoximgStyle::PATH);
-                rl.trace_log(TraceLogLevel::LOG_WARNING, &format!("FOXIMG: {err_header}"));
-
-                let err = format!(" - {e:?}");
-                // Using println instead of the tracelog because of the maximum character limit imposed
-                // by raylib.
-                println!("{err}");
-                foximg_log::push(&err);
-
-                if let FoximgConfigError::TOML(_) = e {
-                    foximg_error::show(&format!("{err_header}{err}"));
-                }
-            }
-            None => rl.trace_log(
-                TraceLogLevel::LOG_INFO,
-                &format!("FOXIMG: '{}' loaded successfully", FoximgStyle::PATH),
-            ),
-        }
-
-        style.update_style(&mut rl);
-        if let Some((x, y)) = state.xy {
-            rl.set_window_position(x, y);
-        }
-        if state.maximized {
-            unsafe { ffi::MaximizeWindow() }
-        }
-
-        let fullscreen = state.fullscreen;
-        if fullscreen {
-            rl.toggle_borderless_windowed();
-        }
 
         rl.set_exit_key(None);
         rl.set_target_fps(60);
 
-        let mouse_wheel = 0.;
-        let camera = Camera2D {
-            zoom: 1.,
-            ..Default::default()
+        let instance = FoximgInstance::new(&mut rl);
+
+        // Style must be initialized before state because on Windows the titlebar's color gets updated
+        // only once it's resized. The window can't get resized if it's already maximized, so the
+        // window appears in light mode on startup otherwise.
+        let style = FoximgStyle::new(&mut rl);
+        let state = if instance
+            .as_ref()
+            .is_some_and(|instance| matches!(instance.owner(), Ok(true)))
+        {
+            FoximgState::new(&mut rl)
+        } else {
+            FoximgState::default()
         };
 
+        let settings = FoximgSettings::new(&mut rl);
         let resources = FoximgResources::new(&mut rl, &rl_thread);
 
-        rl.trace_log(TraceLogLevel::LOG_INFO, "FOXIMG: === Opened Foximg ===");
+        rl.trace_log(
+            TraceLogLevel::LOG_INFO,
+            "FOXIMG: Foximg initialized successfully",
+        );
 
         Self {
+            images: None,
+            mouse_pos: Vector2::zero(),
+            btn_bounds: FoximgBtnsBounds::default(),
+            mouse_wheel: 0.,
+            camera: Camera2D {
+                zoom: 1.,
+                ..Default::default()
+            },
             state,
+            settings,
             style,
+            resources,
             rl,
             rl_thread,
-            fullscreen,
-            mouse_wheel,
-            camera,
-            resources,
             instance,
-            should_exit: false,
-            images: None,
-        }
-    }
-
-    fn rotate_n90(&mut self) {
-        if let Some(ref mut images) = self.images {
-            images.get_mut().rotate_n90();
-        }
-    }
-
-    fn rotate_90(&mut self) {
-        if let Some(ref mut images) = self.images {
-            images.get_mut().rotate_90();
-        }
-    }
-
-    fn flip_horizontal(&mut self) {
-        if let Some(ref mut images) = self.images {
-            images.get_mut().flip_horizontal();
-        }
-    }
-
-    fn flip_vertical(&mut self) {
-        if let Some(ref mut images) = self.images {
-            images.get_mut().flip_vertical();
         }
     }
 
     fn toggle_fullscreen(&mut self) {
-        self.rl.toggle_borderless_windowed();
-        self.fullscreen = !self.fullscreen;
+        if self.rl.is_key_pressed(KeyboardKey::KEY_F11) {
+            self.state.fullscreen = !self.state.fullscreen;
+            self.rl.toggle_borderless_windowed();
+        }
     }
 
-    fn draw(&mut self, bounds: FoximgBtnsBounds) {
-        let mut d = FoximgDraw::new_with_bounds(self, bounds);
-        d.draw_img(true);
-        d.draw_btns();
+    fn create_tracelog_file(&self) {
+        if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) 
+            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL)) 
+            && self.rl.is_key_pressed(KeyboardKey::KEY_L) 
+        {
+            foximg_log::create_file();
+        }
     }
 
-    pub fn run(mut self, arg: Option<&str>) {
-        if let Some(image) = arg {
-            self.load_img(Path::new(image));
+    fn update(&mut self) {
+        if let Some(ref mut instsance) = self.instance {
+            instsance.update(&self.rl);
         }
 
-        let mut debug_menu = false;
+        self.toggle_fullscreen();
+        self.create_tracelog_file();
+        self.mouse_pos = self.rl.get_mouse_position();
+    }
 
-        while !self.should_exit {
-            if self.rl.window_should_close() {
-                self.should_exit = true;
+    fn get_dropped_img(&mut self) {
+        if self.rl.is_file_dropped() {
+            let files = self.rl.load_dropped_files();
+            if let Some(path) = files.paths().first() {
+                self.load_folder(path);
             }
+        }
+    }
 
-            if self.rl.is_file_dropped() {
-                self.load_dropped();
+    fn update_mouse_cursor(&mut self) {
+        if let Some(ref images) = self.images {
+            if self.rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) && self.mouse_wheel > 0.
+                || self.btn_bounds.mouse_on_left_btn() && images.can_dec()
+                || self.btn_bounds.mouse_on_right_btn() && images.can_inc()
+            {
+                self.rl
+                    .set_mouse_cursor(MouseCursor::MOUSE_CURSOR_POINTING_HAND);
+            } else {
+                self.rl.set_mouse_cursor(MouseCursor::MOUSE_CURSOR_DEFAULT);
             }
+        }
+    }
 
-            // Toggle debug menu
-            if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
-                || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
-                && (self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-                    || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT))
-                && self.rl.is_key_pressed(KeyboardKey::KEY_D)
-            {
-                debug_menu = true;
+    fn manipulate_img(&mut self) {
+        // // We want to poll for only one of these events every frame
+        static POLL_IMG_EVENTS: &[fn(&mut Foximg) -> bool] = &[
+            Foximg::zoom_in1_img, 
+            Foximg::zoom_out1_img, 
+            Foximg::zoom_in5_img,
+            Foximg::zoom_out5_img,
+            Foximg::flip_horizontal_img,
+            Foximg::flip_vertical_img,
+            Foximg::rotate_n1_img,
+            Foximg::rotate_1_img,
+            Foximg::rotate_n90_img,
+            Foximg::rotate_90_img,
+            Foximg::update_gallery,
+        ];
 
-            // Mirroring shortcuts
-            } else if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-                || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT))
-                && self.rl.is_key_pressed(KeyboardKey::KEY_Q)
-            {
-                self.flip_horizontal();
-            } else if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-                || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT))
-                && self.rl.is_key_pressed(KeyboardKey::KEY_E)
-            {
-                self.flip_vertical();
+        POLL_IMG_EVENTS.iter().find(|event| event(self));
+        self.zoom_scroll_img();
+        self.pan_img();
+    }
 
-            // Rotation shortcuts
-            } else if self.rl.is_key_pressed(KeyboardKey::KEY_Q) {
-                self.rotate_n90();
-            } else if self.rl.is_key_pressed(KeyboardKey::KEY_E) {
-                self.rotate_90();
+    pub fn run(mut self, path: Option<&str>) {
+        if let Some(path) = path {
+            self.load_folder(path);
+        }
 
-            // Fullscreen shortcut
-            } else if self.rl.is_key_pressed(KeyboardKey::KEY_F11) {
-                self.toggle_fullscreen();
-            }
+        while !self.rl.window_should_close() {
+            self.update();
+            self.btn_bounds = FoximgBtnsBounds::new(&self.rl, self.mouse_pos);
+            self.get_dropped_img();
+            self.update_mouse_cursor();
+            self.manipulate_img();
 
-            let bounds = FoximgBtnsBounds::new(&self.rl);
-
-            // Show menus
             if self
                 .rl
                 .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
             {
-                let mut menu = if debug_menu {
-                    debug_menu = false;
-                    FoximgMenu::init_debug(&mut self, bounds.mouse_pos())
+                let keep_running = FoximgMenu::init(&mut self).run();
+                if !keep_running {
+                    return;
+                }
+            }
+
+            FoximgDraw::begin(&mut self, |mut d, images| {
+                if let Some(images) = images {
+                    d.draw_current_img(images);
+                    d.draw_btns(images);
                 } else {
-                    FoximgMenu::init(&mut self, bounds.mouse_pos())
-                };
-                menu.set_state();
-                continue;
-            }
-
-            if let Some(ref mut images) = self.images {
-                if self.rl.is_key_pressed(KeyboardKey::KEY_A) {
-                    let mut_iter = images.try_dec_iter();
-                    if let Some(mut_iter) = mut_iter {
-                        mut_iter.dec_once(&self.rl, &self.rl_thread);
-                    }
-                } else if self.rl.is_key_pressed(KeyboardKey::KEY_D) {
-                    let mut_iter = images.try_inc_iter();
-                    if let Some(mut_iter) = mut_iter {
-                        mut_iter.inc_once(&self.rl, &self.rl_thread);
-                    }
+                    d.draw_large_centered_text("drag + drop an image");
                 }
-
-                if self
-                    .rl
-                    .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
-                {
-                    if bounds.mouse_pos_left() {
-                        let mut_iter = images.try_dec_iter();
-                        if let Some(mut_iter) = mut_iter {
-                            mut_iter.dec_once(&self.rl, &self.rl_thread);
-                        }
-                    } else if bounds.mouse_pos_right() {
-                        let mut_iter = images.try_inc_iter();
-                        if let Some(mut_iter) = mut_iter {
-                            mut_iter.inc_once(&self.rl, &self.rl_thread);
-                        }
-                    }
-                }
-            }
-
-            self.draw(bounds);
+            });
         }
     }
 }
 
-impl Drop for Foximg<'_> {
+impl Drop for Foximg {
     fn drop(&mut self) {
-        self.rl
-            .trace_log(TraceLogLevel::LOG_INFO, "=== Closing Foximg ===");
-
-        if let Ok(true) = self.instance.owner() {
-            self.save_state();
+        if let Some(instance) = self.instance.take() {
+            match instance.owner() {
+                Ok(true) => self.save_state(),
+                Ok(false) => (),
+                Err(e) => {
+                    self.rl.trace_log(
+                        TraceLogLevel::LOG_WARNING,
+                        "FOXIMG: Failed to get whether this is the only instance:",
+                    );
+                    self.rl
+                        .trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+                }
+            }
+            instance.delete(&self.rl)
         }
     }
+}
+
+struct FoximgArgs<'a> {
+    verbose: bool,
+    path: Option<&'a str>,
+}
+
+impl<'a> FoximgArgs<'a> {
+    pub fn new() -> Self {
+        Self {
+            verbose: cfg!(debug_assertions),
+            path: None,
+        }
+    }
+
+    fn run(self) {
+        let foximg = Foximg::init(self.verbose);
+        foximg.run(self.path);
+
+        foximg_log::tracelog(
+            TraceLogLevel::LOG_INFO,
+            "FOXIMG: Foximg uninitialized successfully. Goodbye!",
+        );
+    }
+
+    fn parse_option(&mut self, arg: Chars) -> bool {
+        for c in arg {
+            if c == 'q' {
+                foximg_log::quiet(true);
+            } else if c == 'v' {
+                self.verbose = true;
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn parse_args(mut self, args: &'a [String]) {
+        let mut args = args.iter();
+        // First argument always is the application path.
+        args.next();
+
+        while let Some(arg) = args.next().map(|arg| arg.as_str()) {
+            if arg == "--help" {
+                return self::help();
+            } else if arg == "--quiet" {
+                foximg_log::quiet(true);
+            } else if arg == "--verbose" {
+                self.verbose = true;
+            } else if arg.chars().nth(0) == Some('-') {
+                let arg = arg[1..].chars();
+                if !self.parse_option(arg) {
+                    return self::help();
+                }
+            } else if self.path.is_none() {
+                self.path = Some(arg);
+            } else {
+                return self::help();
+            }
+        }
+
+        self.run();
+    }
+}
+
+fn help() {
+    const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+    const GRAY_COLOR: &str = "\x1b[3m\x1b[38;5;8m";
+    const GREEN_COLOR: &str = "\x1b[38;5;114m";
+    const RESET_COLOR: &str = "\x1b[0m";
+    const PINK_COLOR: &str = "\x1b[1m\x1b[38;5;219m";
+
+    eprintln!("{PINK_COLOR}foximg {FOXIMG_VERSION}:{RESET_COLOR} {FOXIMG_DESCRIPTION}\n");
+    eprintln!("{GREEN_COLOR}Usage:{RESET_COLOR}");
+    eprintln!("    foximg {GRAY_COLOR}[OPTION...] [PATH]{RESET_COLOR}");
+    eprintln!("{GREEN_COLOR}Options:{RESET_COLOR}");
+    eprintln!("    {GRAY_COLOR}-h, --help     {RESET_COLOR}Print help");
+    eprintln!("    {GRAY_COLOR}-q, --quiet    {RESET_COLOR}Don't print log messages");
+    eprintln!("    {GRAY_COLOR}-v, --verbose  {RESET_COLOR}Make TRACE and DEBUG log messages");
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let mut arg = args.get(1).map(|path| path.as_str());
-    let mut quiet = false;
+    std::panic::set_hook(Box::new(foximg_log::panic));
 
-    if let Some("--help") | Some("-h") = arg {
-        foximg_help::show();
-    } else {
-        if let Some("--quiet") | Some("-q") = arg {
-            arg = args.get(2).map(|path| path.as_str());
-            quiet = true;
-        }
-        let foximg = Foximg::init(quiet);
-        foximg.run(arg);
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    if let Err(e) = self::set_vt() {
+        foximg_log::tracelog(
+            TraceLogLevel::LOG_WARNING,
+            "FOXIMG: Failed to enable virtual terminal processing. Log output is not guaranteed to look elligible:",
+        );
+        foximg_log::tracelog(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
     }
+
+    let args: Vec<String> = std::env::args().collect();
+    FoximgArgs::new().parse_args(&args);
+}
+
+#[cfg(all(debug_assertions, target_os = "windows"))]
+fn set_vt() -> windows::core::Result<()> {
+    use windows::Win32::System::Console::{
+        CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle,
+        STD_OUTPUT_HANDLE, SetConsoleMode,
+    };
+
+    unsafe {
+        let hout = GetStdHandle(STD_OUTPUT_HANDLE)?;
+        let mut mode = CONSOLE_MODE::default();
+
+        GetConsoleMode(hout, &mut mode)?;
+        mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+
+        SetConsoleMode(hout, mode)?;
+    }
+    Ok(())
 }

@@ -1,31 +1,110 @@
 use std::{
     fs::{self, File},
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::exit,
-    sync::Mutex,
+    sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::anyhow;
 use chrono::Local;
 use raylib::ffi::TraceLogLevel;
+use tinyfiledialogs::MessageBoxIcon;
 
-use crate::foximg_error;
+use crate::FoximgInstance;
 
-static LOG: Mutex<String> = Mutex::new(String::new());
+static LOG: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::with_capacity(8 * 1024)));
+static LOG_QUIET: AtomicBool = AtomicBool::new(false);
+
+pub fn quiet(val: bool) {
+    LOG_QUIET.store(val, Ordering::SeqCst);
+}
+
+fn show_msg(msg: &str, icon: MessageBoxIcon) {
+    // tinyfiledialogs doesn't allow any quotes in messages for security reasons:
+    // https://github.com/jdm/tinyfiledialogs-rs/issues/19#issuecomment-703524215
+    // https://nvd.nist.gov/vuln/detail/cve-2020-36767
+    let mut msg = msg.replace('"', "“");
+    msg = msg.replace('\'', "＇");
+
+    // tinyfiledialogs-rs 3.9.1 allows shell metacharacters in its message boxes. This allows for
+    // OS Command Injection exploits:
+    // https://nvd.nist.gov/vuln/detail/CVE-2023-47104
+    // https://avd.aquasec.com/nvd/2023/cve-2023-47104/
+    if cfg!(not(any(target_os = "windows", target_os = "macos"))) {
+        msg = msg.replace('`', "＇");
+        msg = msg.replace('$', "＄");
+        msg = msg.replace('&', "＆");
+        msg = msg.replace(';', ";");
+        msg = msg.replace('|', "｜");
+        msg = msg.replace('<', "＜");
+        msg = msg.replace('>', "＞");
+        msg = msg.replace('(', "（");
+        msg = msg.replace(')', "）");
+    }
+
+    tinyfiledialogs::message_box_ok(
+        &format!(
+            "foximg - {}",
+            match icon {
+                MessageBoxIcon::Info => "Info",
+                MessageBoxIcon::Warning => "Warning",
+                MessageBoxIcon::Error => "Error",
+                MessageBoxIcon::Question => "Question",
+            }
+        ),
+        &msg,
+        icon,
+    );
+}
+
+#[inline(always)]
+fn foximg_logfile_folder_current_ext(name: &str) -> anyhow::Result<PathBuf> {
+    let mut folder = std::env::current_exe()?;
+    folder.pop();
+
+    Ok(folder.join(name))
+}
+
+fn foximg_logfile_folder() -> anyhow::Result<PathBuf> {
+    if !cfg!(target_os = "windows") && !cfg!(debug_assertions) {
+        let mut path: PathBuf = match std::env::var("XDG_STATE_HOME") {
+            Ok(path) => path.into(),
+            Err(_) => {
+                let Result::<PathBuf, _>::Ok(mut path) =
+                    std::env::var("HOME").map(|path| path.into())
+                else {
+                    tracelog(
+                        TraceLogLevel::LOG_WARNING,
+                        "FOXIMG: \"HOME\" enviroment variable not set. Using log folder in executable's directory",
+                    );
+                    return foximg_logfile_folder_current_ext(".foximg_logs");
+                };
+
+                path.push(".local/state");
+                path
+            }
+        };
+        path.push("foximg/logs");
+        Ok(path)
+    } else {
+        foximg_logfile_folder_current_ext("logs")
+    }
+}
 
 fn foximg_logfile(
     crash: bool,
     time: chrono::DateTime<Local>,
     msg: &str,
 ) -> anyhow::Result<PathBuf> {
-    let folder = Path::new("logs");
-    let log_type = match crash {
-        true => "CRASH",
-        false => "LOG",
-    };
+    let folder = self::foximg_logfile_folder()?;
+    let log_type = if crash { "CRASH" } else { "LOG" };
     let filename = format!("{log_type} {}.log", time.format("%d.%m.%Y %H.%M.%S"));
     let path = folder.join(filename);
+
     if !folder.exists() {
         fs::create_dir(folder)?;
     }
@@ -44,33 +123,41 @@ fn foximg_logfile(
     Ok(path)
 }
 
-pub const CREATED_LOG_FILE_MSG: &str = "Created log file";
-
 fn foximg_logfile_msg(log: anyhow::Result<PathBuf>) -> String {
     match log {
-        Ok(path) => format!("{CREATED_LOG_FILE_MSG} in {:?}", path),
+        Ok(path) => format!("Created log file in {:?}", path),
         Err(e) => format!("Couldn't create log file: {:?}", e),
     }
 }
 
-pub fn create_file() -> anyhow::Result<()> {
+pub fn create_file() {
     let time = Local::now();
     let time_str = format!("{}: ", time.format("%H:%M:%S"));
-    foximg_logfile(
-        false,
-        time,
-        &format!("{time_str}INFO: {CREATED_LOG_FILE_MSG}"),
-    )
-    .map(|_| ())
+    let log = foximg_logfile(false, time, &format!("{time_str}INFO: Created log file"));
+
+    let icon = if log.is_ok() {
+        MessageBoxIcon::Info
+    } else {
+        MessageBoxIcon::Error
+    };
+
+    self::show_msg(&foximg_logfile_msg(log), icon);
 }
 
 #[cold]
 #[inline(never)]
-pub fn panic(panic_info: &std::panic::PanicInfo) {
+pub fn panic(panic_info: &std::panic::PanicHookInfo) {
     let time = Local::now();
     let time_str = format!("{}: ", time.format("%H:%M:%S"));
-    let log = foximg_logfile(true, time, &format!("{time_str}PANIC: {panic_info}"));
-    foximg_error::show(&format!("{panic_info}\n\n{}", foximg_logfile_msg(log)));
+    let panic_str = panic_info.to_string();
+
+    self::print_log(&time_str, TraceLogLevel::LOG_ERROR, "PANIC: ", &panic_str);
+
+    let log = self::foximg_logfile(true, time, &format!("{time_str}PANIC: {panic_str}"));
+    self::show_msg(
+        &format!("{panic_str}\n\n{}", self::foximg_logfile_msg(log)),
+        MessageBoxIcon::Error,
+    );
 }
 
 pub fn tracelog(level: TraceLogLevel, msg: &str) {
@@ -87,22 +174,60 @@ pub fn tracelog(level: TraceLogLevel, msg: &str) {
         LOG_FATAL => "FATAL: ",
         _ => "",
     };
+
     let msg_fmt = format!("{time_str}{level_str}{msg}\n");
+    self::print_log(&time_str, level, level_str, msg);
 
     if level == LOG_ERROR {
-        foximg_error::show(msg);
+        self::show_msg(msg, MessageBoxIcon::Error);
     } else if level == LOG_FATAL {
-        let log = foximg_logfile(true, time, &msg_fmt);
-        foximg_error::show(&format!("{msg}\n\n{}", foximg_logfile_msg(log)));
+        // Fatal logs exit the process without running destructors. Therefore we want to delete the
+        // instance folder ourselves, since it won't get deleted by the FoximgInstance destructor.
+        if let Err(e) = self::fatal_delete_instance_folder() {
+            tracelog(
+                LOG_WARNING,
+                "FOXIMG: Failed to delete instance marker folder:",
+            );
+            tracelog(LOG_WARNING, &format!("    > {e}"));
+        }
+
+        let log = self::foximg_logfile(true, time, &msg_fmt);
+        self::show_msg(
+            &format!("{msg}\n\n{}", self::foximg_logfile_msg(log)),
+            MessageBoxIcon::Error,
+        );
         exit(1);
     }
 
-    #[cfg(any(debug_assertions, not(target_os = "windows")))]
-    print!("{msg_fmt}");
-    push(&msg_fmt);
+    self::LOG.lock().unwrap().push_str(&msg_fmt);
 }
 
-pub fn push(string: &str) {
-    let mut log = LOG.lock().unwrap();
-    log.push_str(string);
+fn print_log(time_str: &str, level_color: TraceLogLevel, level_str: &str, msg: &str) {
+    use TraceLogLevel::*;
+
+    if !(cfg!(all(debug_assertions, target_os = "windows")) || cfg!(not(target_os = "windows")))
+        || self::LOG_QUIET.load(Ordering::SeqCst)
+    {
+        return;
+    }
+
+    const TIME_COLOR: &str = "\x1b[3m\x1b[38;5;52m";
+    const RESET_COLOR: &str = "\x1b[0m";
+
+    let level_color = match level_color {
+        LOG_TRACE => "\x1b[3m\x1b[38;5;8m",
+        LOG_DEBUG => "\x1b[38;5;20m",
+        LOG_INFO => "\x1b[38;5;114m",
+        LOG_WARNING => "\x1b[38;5;202m",
+        LOG_ERROR | LOG_FATAL => "\x1b[1m\x1b[38;5;202m",
+        _ => "",
+    };
+
+    eprintln!("{TIME_COLOR}{time_str}{RESET_COLOR}{level_color}{level_str}{RESET_COLOR}{msg}");
+}
+
+fn fatal_delete_instance_folder() -> std::io::Result<()> {
+    let instance_folder = FoximgInstance::instances_path()?;
+    std::fs::remove_dir_all(instance_folder)?;
+    Ok(())
 }
