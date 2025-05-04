@@ -1,9 +1,6 @@
-/.instance
-/target
-/logs
-
 *.kra
 
+/.vscode
+/target
+
 Cargo.lock
-foximg_state.toml
-foximg_style.toml
