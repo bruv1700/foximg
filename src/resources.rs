@@ -1,6 +1,6 @@
 use raylib::prelude::*;
 
-use crate::images::FoximgImage;
+use crate::images;
 
 const YUDIT_SIZE: f32 = 64.;
 
@@ -22,8 +22,8 @@ impl FoximgResources {
         static GRAD: &[u8] = include_bytes!("resources/grad.png");
         static YUDIT: &[u8] = include_bytes!("resources/yudit.ttf");
 
-        let flip = FoximgImage::new_resource(rl, rl_thread, FLIP, "flip.png").unwrap();
-        let grad = FoximgImage::new_resource(rl, rl_thread, GRAD, "grad.png").unwrap();
+        let flip = images::new_resource(rl, rl_thread, FLIP, "flip.png").unwrap();
+        let grad = images::new_resource(rl, rl_thread, GRAD, "grad.png").unwrap();
         let yudit = rl
             .load_font_from_memory(rl_thread, ".ttf", YUDIT, self::YUDIT_SIZE as i32, None)
             .unwrap();

@@ -21,6 +21,8 @@ mod foximg_image_loader;
 mod foximg_png_decoder;
 mod foximg_webp_decoder;
 
+pub use foximg_image_loader::new_resource;
+
 /// Number of repetitions in an animated image.
 #[derive(Copy, Clone)]
 enum AnimationLoops {

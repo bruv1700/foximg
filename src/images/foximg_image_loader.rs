@@ -386,28 +386,28 @@ impl FoximgImage {
 
             Ok(Rc::new(RefCell::new(texture)))
         }
-    }
+    }    
+}
 
-    fn log_resource(rl: &RaylibHandle, resource_name: &str) {
-        rl.trace_log(
-            TraceLogLevel::LOG_INFO,
-            &format!("FOXIMG: Resource \"{resource_name}\" loaded successfully"),
-        );
-    }
+fn log_resource(rl: &RaylibHandle, resource_name: &str) {
+    rl.trace_log(
+        TraceLogLevel::LOG_INFO,
+        &format!("FOXIMG: Resource \"{resource_name}\" loaded successfully"),
+    );
+}
 
-    pub fn new_resource(
-        rl: &mut RaylibHandle,
-        rl_thread: &RaylibThread,
-        png_bytes: &[u8],
-        resource_name: &str,
-    ) -> anyhow::Result<Texture2D> {
-        let reader = Cursor::new(png_bytes);
-        let decoder = PngDecoder::new(reader)?;
-        let image = Self::decode_static(decoder)?;
-        let texture = rl.load_texture_from_image(rl_thread, &image)?;
+pub fn new_resource(
+    rl: &mut RaylibHandle,
+    rl_thread: &RaylibThread,
+    png_bytes: &[u8],
+    resource_name: &str,
+) -> anyhow::Result<Texture2D> {
+    let reader = Cursor::new(png_bytes);
+    let decoder = PngDecoder::new(reader)?;
+    let image = FoximgImage::decode_static(decoder)?;
+    let texture = rl.load_texture_from_image(rl_thread, &image)?;
 
-        Self::log_resource(rl, resource_name);
+    self::log_resource(rl, resource_name);
 
-        Ok(texture)
-    }
+    Ok(texture)
 }
