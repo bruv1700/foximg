@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=foximg
+GenericName=Image viewer
+Comment=Simple & convenient image viewer
+Icon=foximg
+Exec=foximg %f
+Terminal=false
+Categories=Graphics;Viewer;

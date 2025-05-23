@@ -2,7 +2,7 @@
 name = "foximg"
 description = "Simple & convenient image viewer"
 authors = ["bruvy"]
-version = "0.2.0"
+version = "0.3.0-dev"
 edition = "2024"
 
 [profile.release]
@@ -55,7 +55,10 @@ winresource = "0.1.20"
 windows = { version = "0.61.1", features = [
     "Win32_Graphics_Dwm",
     "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
 ] }
+windows-link = "0.1.1"
 
 [package.metadata.winresource]
 InternalName = "foximg"

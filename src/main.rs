@@ -7,7 +7,7 @@ use std::{
     str::Chars, time::Duration,
 };
 
-use config::{FoximgConfig, FoximgSettings, FoximgState, FoximgStyle};
+use config::{FoximgConfig, FoximgIcon, FoximgSettings, FoximgState, FoximgStyle};
 use images::FoximgImages;
 use menu::FoximgMenu;
 use raylib::prelude::*;
@@ -440,7 +440,9 @@ impl Foximg {
 
         let settings = FoximgSettings::new(&mut rl);
         let resources = FoximgResources::new(&mut rl, &rl_thread);
+        let icon = FoximgIcon::new(&mut rl);
 
+        images::set_window_icon(&mut rl, &style, icon);
         rl.trace_log(
             TraceLogLevel::LOG_INFO,
             "FOXIMG: Foximg initialized successfully",

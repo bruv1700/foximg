@@ -21,7 +21,7 @@ mod foximg_image_loader;
 mod foximg_png_decoder;
 mod foximg_webp_decoder;
 
-pub use foximg_image_loader::new_resource;
+pub use foximg_image_loader::{new_resource, set_window_icon};
 
 /// Number of repetitions in an animated image.
 #[derive(Copy, Clone)]

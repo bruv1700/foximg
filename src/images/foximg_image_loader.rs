@@ -7,7 +7,7 @@ use std::{
     fs::File,
     io::{BufReader, Cursor},
     mem::ManuallyDrop,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -18,7 +18,10 @@ use image::{
 };
 use raylib::prelude::*;
 
-use crate::images::foximg_png_decoder::PngDecoder;
+use crate::{
+    config::{FoximgIcon, FoximgStyle},
+    images::foximg_png_decoder::PngDecoder,
+};
 
 use super::{
     AnimationLoops, AnimationLoopsDecoder, FoximgImage, FoximgImageAnimated,
@@ -386,7 +389,7 @@ impl FoximgImage {
 
             Ok(Rc::new(RefCell::new(texture)))
         }
-    }    
+    }
 }
 
 fn log_resource(rl: &RaylibHandle, resource_name: &str) {
@@ -410,4 +413,245 @@ pub fn new_resource(
     self::log_resource(rl, resource_name);
 
     Ok(texture)
+}
+
+#[inline(always)]
+fn get_window_icon_file(icon: PathBuf) -> anyhow::Result<Image> {
+    if !icon.exists() {
+        anyhow::bail!("FOXIMG: File {icon:?} doesn't exist");
+    }
+
+    let icon = std::fs::read(icon)?;
+    let reader = Cursor::new(icon);
+    let decoder = PngDecoder::new(reader)?;
+
+    FoximgImage::decode_static(decoder)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_window_icon(icon: FoximgIcon) -> anyhow::Result<Image> {
+    let Some(icon) = icon.path else {
+        anyhow::bail!("FOXIMG: Couldn't find \"foximg.png\"");
+    };
+
+    self::get_window_icon_file(icon)
+}
+
+#[cfg(target_os = "windows")]
+fn get_window_icon(icon: FoximgIcon) -> anyhow::Result<Image> {
+    use std::{mem::MaybeUninit, ptr::addr_of_mut};
+
+    use windows::{
+        Win32::{
+            Graphics::Gdi::{
+                BI_RGB, BITMAP, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits,
+                GetObjectW, ReleaseDC,
+            },
+            System::LibraryLoader::GetModuleHandleW,
+        },
+        core::PCWSTR,
+    };
+
+    use win32_ui_windowsandmessaging::*;
+
+    if let Some(icon) = icon.path {
+        return self::get_window_icon_file(icon);
+    }
+
+    let icon = unsafe { LoadIconW(Some(GetModuleHandleW(None)?.into()), PCWSTR(1 as _))? };
+    let bitmap_size_i32 = i32::try_from(size_of::<BITMAP>())?;
+    let biheader_size_u32 = u32::try_from(size_of::<BITMAPINFOHEADER>())?;
+    let mut info = MaybeUninit::uninit();
+
+    unsafe { GetIconInfo(icon, info.as_mut_ptr()) }?;
+
+    let info = unsafe { info.assume_init_ref() };
+    unsafe { DeleteObject(info.hbmMask.into()).ok()? };
+
+    let mut bitmap: MaybeUninit<BITMAP> = MaybeUninit::uninit();
+    let result = unsafe {
+        GetObjectW(
+            info.hbmColor.into(),
+            bitmap_size_i32,
+            Some(bitmap.as_mut_ptr().cast()),
+        )
+    };
+
+    if result != bitmap_size_i32 {
+        anyhow::bail!("GetObjectW failed");
+    }
+
+    let bitmap = unsafe { bitmap.assume_init_ref() };
+    let width_u32 = u32::try_from(bitmap.bmWidth)?;
+    let height_u32 = u32::try_from(bitmap.bmHeight)?;
+    let width_usize = usize::try_from(bitmap.bmWidth)?;
+    let height_usize = usize::try_from(bitmap.bmHeight)?;
+    let buf_size = width_usize
+        .checked_mul(height_usize)
+        .and_then(|size| size.checked_mul(4))
+        .unwrap();
+
+    let mut buf: Vec<u8> = Vec::with_capacity(buf_size);
+    let dc = unsafe { GetDC(None) };
+
+    if dc.is_invalid() {
+        anyhow::bail!("GetDC failed");
+    }
+
+    let mut bitmap_info = BITMAPINFOHEADER {
+        biSize: biheader_size_u32,
+        biWidth: bitmap.bmWidth,
+        biHeight: -bitmap.bmHeight,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB.0,
+        biSizeImage: 0,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+    };
+
+    let result = unsafe {
+        GetDIBits(
+            dc,
+            info.hbmColor,
+            0,
+            height_u32,
+            Some(buf.as_mut_ptr().cast()),
+            addr_of_mut!(bitmap_info).cast(),
+            DIB_RGB_COLORS,
+        )
+    };
+
+    if result != bitmap.bmHeight {
+        anyhow::bail!("GetDIBits failed");
+    }
+
+    unsafe { buf.set_len(buf.capacity()) };
+
+    let result = unsafe { ReleaseDC(None, dc) };
+
+    if result != 1 {
+        anyhow::bail!("ReleaseDC failed");
+    }
+
+    unsafe { DeleteObject(info.hbmColor.into()).ok()? };
+
+    for chunk in buf.chunks_exact_mut(4) {
+        let [b, _, r, _] = chunk else { unreachable!() };
+        std::mem::swap(b, r);
+    }
+
+    let image = unsafe {
+        Image::from_raw(ffi::Image {
+            data: buf.as_mut_ptr().cast(),
+            width: width_u32 as i32,
+            height: height_u32 as i32,
+            mipmaps: 1,
+            format: PixelFormat::PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 as i32,
+        })
+    };
+
+    std::mem::forget(buf);
+    Ok(image)
+}
+
+fn try_set_window_icon(
+    rl: &mut RaylibHandle,
+    style: &FoximgStyle,
+    icon: FoximgIcon,
+) -> anyhow::Result<()> {
+    let mut image = self::get_window_icon(icon)?;
+    if !style.dark {
+        image.color_tint(Color::get_color(
+            rl.gui_get_style(GuiControl::DEFAULT, GuiControlProperty::BASE_COLOR_FOCUSED) as u32,
+        ));
+    }
+
+    rl.set_window_icon(image);
+    rl.trace_log(TraceLogLevel::LOG_INFO, "FOXIMG: Set window icon");
+
+    Ok(())
+}
+
+pub fn set_window_icon(rl: &mut RaylibHandle, style: &FoximgStyle, icon: FoximgIcon) {
+    if let Err(e) = self::try_set_window_icon(rl, style, icon) {
+        rl.trace_log(
+            TraceLogLevel::LOG_WARNING,
+            "FOXIMG: Failed to set window icon:",
+        );
+        rl.trace_log(TraceLogLevel::LOG_WARNING, &format!("   > {e}"));
+    }
+}
+
+/// Copied from the windows-rs crate. I don't want to use the `UI_WindowsAndMessaging` feature because
+/// it links with `CloseWindow` which conflicts with raylib's `CloseWindow`. So I'm just linking with
+/// what I need.
+#[allow(non_snake_case)]
+#[cfg(target_os = "windows")]
+mod win32_ui_windowsandmessaging {
+    use windows::{Win32::Foundation::HINSTANCE, core::PCWSTR};
+
+    #[repr(transparent)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct HICON(pub *mut std::ffi::c_void);
+    impl HICON {
+        pub fn is_invalid(&self) -> bool {
+            self.0 == -1 as _ || self.0 == 0 as _
+        }
+    }
+    impl windows::core::Free for HICON {
+        #[inline]
+        unsafe fn free(&mut self) {
+            if !self.is_invalid() {
+                windows_link::link!("user32.dll" "system" fn DestroyIcon(hicon : *mut std::ffi::c_void) -> i32);
+                unsafe {
+                    DestroyIcon(self.0);
+                }
+            }
+        }
+    }
+
+    impl Default for HICON {
+        fn default() -> Self {
+            unsafe { std::mem::zeroed() }
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct ICONINFO {
+        pub fIcon: windows::core::BOOL,
+        pub xHotspot: u32,
+        pub yHotspot: u32,
+        pub hbmMask: windows::Win32::Graphics::Gdi::HBITMAP,
+        pub hbmColor: windows::Win32::Graphics::Gdi::HBITMAP,
+    }
+
+    #[inline]
+    pub unsafe fn LoadIconW<P1>(
+        hinstance: Option<HINSTANCE>,
+        lpiconname: P1,
+    ) -> windows::core::Result<HICON>
+    where
+        P1: windows::core::Param<PCWSTR>,
+    {
+        windows_link::link!("user32.dll" "system" fn LoadIconW(hinstance: HINSTANCE, lpiconname: PCWSTR) -> HICON);
+        let result__ = unsafe {
+            LoadIconW(
+                hinstance.unwrap_or(std::mem::zeroed()) as _,
+                lpiconname.param().abi(),
+            )
+        };
+        (!result__.is_invalid())
+            .then_some(result__)
+            .ok_or_else(windows::core::Error::from_win32)
+    }
+
+    #[inline]
+    pub unsafe fn GetIconInfo(hicon: HICON, piconinfo: *mut ICONINFO) -> windows::core::Result<()> {
+        windows_link::link!("user32.dll" "system" fn GetIconInfo(hicon : HICON, piconinfo : *mut ICONINFO) -> windows::core::BOOL);
+        unsafe { GetIconInfo(hicon, piconinfo as _).ok() }
+    }
 }

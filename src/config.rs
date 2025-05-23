@@ -2,14 +2,14 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use foximg_color::FoximgColor;
 use raylib::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::Foximg;
+use crate::{foximg_log, Foximg};
 
 mod foximg_color;
 #[cfg(target_os = "windows")]
@@ -599,5 +599,56 @@ impl Foximg {
                 &format!("FOXIMG: Saved state to \"{}\"", FoximgState::FILE),
             );
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FoximgIcon {
+    pub path: Option<PathBuf>,
+}
+
+impl FoximgConfig for FoximgIcon {
+    const FILE: &'static str = "foximg_icon.toml";
+    const LOCAL: bool = true;
+
+    fn update(&self, _: &mut RaylibHandle) {}
+}
+
+impl Default for FoximgIcon {
+    fn default() -> Self {
+        Self { path: Self::find() }
+    }
+}
+
+impl FoximgIcon {
+    fn find() -> Option<PathBuf> {
+        if cfg!(target_os = "windows") {
+            // On Windows, the icon is embedded in the resource file.
+            return None;
+        };
+
+        foximg_log::tracelog(
+            TraceLogLevel::LOG_INFO,
+            "FOXIMG: Searching for \"foximg.png\"",
+        );
+
+        let mut icon_paths: Vec<PathBuf> = vec![];
+        if let Ok(home) = std::env::var("HOME") {
+            icon_paths.push(Path::new(&home).join(".icons/foximg.png"));
+        }
+
+        let data_dirs =
+            std::env::var("XDG_DATA_DIRS").unwrap_or("/usr/local/share/:/usr/share/".to_string());
+
+        for data_dir in data_dirs.split(':') {
+            icon_paths.push(Path::new(data_dir).join("icons/foximg.png"));
+        }
+
+        icon_paths.push("/usr/share/pixmaps/foximg.png".into());
+        icon_paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("share/pixmaps/foximg.png"));
+
+        icon_paths
+            .into_iter()
+            .find(|path| std::fs::exists(path).is_ok_and(|b| b))
     }
 }
