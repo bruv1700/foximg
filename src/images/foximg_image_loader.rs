@@ -588,7 +588,7 @@ pub fn set_window_icon(rl: &mut RaylibHandle, style: &FoximgStyle, icon: FoximgI
 /// Copied from the windows-rs crate. I don't want to use the `UI_WindowsAndMessaging` feature because
 /// it links with `CloseWindow` which conflicts with raylib's `CloseWindow`. So I'm just linking with
 /// what I need.
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
 #[cfg(target_os = "windows")]
 mod win32_ui_windowsandmessaging {
     use windows::{Win32::Foundation::HINSTANCE, core::PCWSTR};
