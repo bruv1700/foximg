@@ -1,7 +1,6 @@
 use std::{
     cell::{RefCell, RefMut},
     ffi::c_void,
-    fmt::Display,
     fs::ReadDir,
     mem::ManuallyDrop,
     num::NonZeroU32,
@@ -11,60 +10,14 @@ use std::{
 
 use circular_buffer::CircularBuffer;
 use foximg_image_loader::FoximgImageLoader;
-use image::{EncodableLayout, Frame, Frames, ImageResult};
+use image::{foximg::AnimationLoops, EncodableLayout, Frame, Frames, ImageResult};
 use raylib::prelude::*;
 
 use crate::{Foximg, config::FoximgStyle, resources::FoximgResources};
 
-mod foximg_gif_decoder;
 mod foximg_image_loader;
-mod foximg_png_decoder;
-mod foximg_webp_decoder;
 
 pub use foximg_image_loader::{new_resource, set_window_icon};
-
-/// Number of repetitions in an animated image.
-#[derive(Copy, Clone)]
-enum AnimationLoops {
-    /// Finite number of repetitions
-    Finite(NonZeroU32),
-    /// Infinite number of repetitions
-    Infinite,
-}
-
-impl Display for AnimationLoops {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AnimationLoops::Finite(i) => write!(f, "{i}"),
-            AnimationLoops::Infinite => write!(f, "infinite"),
-        }
-    }
-}
-
-impl From<image_webp::LoopCount> for AnimationLoops {
-    fn from(value: image_webp::LoopCount) -> Self {
-        match value {
-            image_webp::LoopCount::Times(i) => Self::Finite(i.into()),
-            image_webp::LoopCount::Forever => Self::Infinite,
-        }
-    }
-}
-
-impl From<gif::Repeat> for AnimationLoops {
-    fn from(value: gif::Repeat) -> Self {
-        match value {
-            gif::Repeat::Finite(0) => Self::Finite(NonZeroU32::new(1).unwrap()),
-            gif::Repeat::Finite(i) => Self::Finite(NonZeroU32::new(i as u32).unwrap()),
-            gif::Repeat::Infinite => Self::Infinite,
-        }
-    }
-}
-
-/// Trait for animated image decoders that can get how many times the animation iterates.
-trait AnimationLoopsDecoder {
-    /// Returns how many times the decoded animation iterates.
-    fn get_loop_count(&self) -> AnimationLoops;
-}
 
 struct FoximgImageAnimated {
     frames: Vec<Frame>,

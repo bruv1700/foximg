@@ -14,20 +14,19 @@ use std::{
 use image::{
     AnimationDecoder, ColorType, DynamicImage, ExtendedColorType, ImageDecoder, ImageError,
     ImageFormat, ImageReader, ImageResult, RgbaImage,
+    codecs::{
+        gif::GifDecoder,
+        png::{ApngDecoder, PngDecoder},
+        webp::WebPDecoder,
+    },
     error::{ImageFormatHint, UnsupportedError, UnsupportedErrorKind},
+    foximg::AnimationLoopsDecoder,
 };
 use raylib::prelude::*;
 
-use crate::{
-    config::{FoximgIcon, FoximgStyle},
-    images::foximg_png_decoder::PngDecoder,
-};
+use crate::config::{FoximgIcon, FoximgStyle};
 
-use super::{
-    AnimationLoops, AnimationLoopsDecoder, FoximgImage, FoximgImageAnimated,
-    foximg_gif_decoder::GifDecoder, foximg_png_decoder::ApngDecoder,
-    foximg_webp_decoder::WebPDecoder,
-};
+use super::{AnimationLoops, FoximgImage, FoximgImageAnimated};
 
 /// Represents a function that constructs a `FoximgImage.`
 pub type FoximgImageLoader =
@@ -42,26 +41,38 @@ impl<'a> FoximgDynamicImage<'a> {
     pub fn new(path: &'a Path) -> ImageResult<Self> {
         let reader = BufReader::new(File::open(path)?);
         let image_reader = ImageReader::new(reader).with_guessed_format()?;
-        let ext = path.extension().unwrap_or_default();
 
+        match image_reader.format().unwrap() {
+            format @ (ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP) => {
+                return Err(ImageError::Unsupported(
+                    UnsupportedError::from_format_and_kind(
+                        ImageFormatHint::Exact(format),
+                        UnsupportedErrorKind::Format(ImageFormatHint::Exact(format)),
+                    ),
+                ));
+            }
+            _ => (),
+        };
+
+        let ext = path.extension().unwrap_or_default();
         let dynamic_image = image_reader.decode()?;
         Ok(Self { ext, dynamic_image })
     }
 
-    fn unsupported_format(&self, color_type: ExtendedColorType) -> ImageError {
+    fn unsupported_color_format(&self, color_type: ExtendedColorType) -> ImageError {
         image::ImageError::Unsupported(UnsupportedError::from_format_and_kind(
             ImageFormatHint::PathExtension(self.ext.into()),
             UnsupportedErrorKind::Color(color_type),
         ))
     }
 
-    fn unknown_format(&self) -> anyhow::Error {
+    fn unknown_color_format(&self) -> anyhow::Error {
         let bpp_u32 = self.dynamic_image.as_bytes().len() as u32 / self.dynamic_image.width()
             * self.dynamic_image.height();
         let bpp: Result<u8, _> = (bpp_u32 * 8).try_into();
         match bpp {
             Ok(bpp) => self
-                .unsupported_format(ExtendedColorType::Unknown(bpp))
+                .unsupported_color_format(ExtendedColorType::Unknown(bpp))
                 .into(),
             Err(_) => {
                 anyhow::anyhow!("Color formats with more than 255 BPP not supported ({bpp_u32})")
@@ -87,9 +98,13 @@ impl<'a> FoximgDynamicImage<'a> {
                 ImageRgba32F(_) => PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 as i32,
                 ImageLuma8(_) => PIXELFORMAT_UNCOMPRESSED_GRAYSCALE as i32,
                 ImageLumaA8(_) => PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA as i32,
-                ImageLuma16(_) => anyhow::bail!(self.unsupported_format(ExtendedColorType::L16)),
-                ImageLumaA16(_) => anyhow::bail!(self.unsupported_format(ExtendedColorType::La16)),
-                _ => anyhow::bail!(self.unknown_format()),
+                ImageLuma16(_) => {
+                    anyhow::bail!(self.unsupported_color_format(ExtendedColorType::L16))
+                }
+                ImageLumaA16(_) => {
+                    anyhow::bail!(self.unsupported_color_format(ExtendedColorType::La16))
+                }
+                _ => anyhow::bail!(self.unknown_color_format()),
             },
         };
 
@@ -305,7 +320,7 @@ impl FoximgImage {
         let bg_color = Color::get_color(
             rl.gui_get_style(GuiControl::DEFAULT, GuiDefaultProperty::BACKGROUND_COLOR) as u32,
         );
-        decoder.set_background_color(bg_color)?;
+        decoder.set_background_color(bg_color.into())?;
 
         let animation = Self::decode_animated(decoder)?;
         let animation_len = animation.get_frames_len();
