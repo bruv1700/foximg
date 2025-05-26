@@ -10,7 +10,7 @@ use std::{
 
 use circular_buffer::CircularBuffer;
 use foximg_image_loader::FoximgImageLoader;
-use image::{foximg::AnimationLoops, EncodableLayout, Frame, Frames, ImageResult};
+use image::{EncodableLayout, Frame, Frames, ImageResult, foximg::AnimationLoops};
 use raylib::prelude::*;
 
 use crate::{Foximg, config::FoximgStyle, resources::FoximgResources};
@@ -150,7 +150,7 @@ impl FoximgImage {
 
     pub fn draw_center_scaled(
         &self,
-        d: &mut impl RaylibDraw,
+        d: &mut RaylibDrawHandle,
         screen_width: f32,
         screen_height: f32,
         scale: f32,
@@ -346,28 +346,38 @@ impl FoximgImages {
         format!("[{} of {}]", self.current + 1, self.paths.len())
     }
 
-    pub fn update_titlebar_and_log(
-        &self,
+    pub fn update_window(
+        &mut self,
         rl: &mut RaylibHandle,
         rl_thread: &RaylibThread,
-        path: &Path,
+        scaleto: bool,
     ) {
+        let path = self.img_path();
         let title = format!("{} {} - {path:?}", Foximg::TITLE, self.img_current_string());
         rl.set_window_title(rl_thread, &title);
         rl.trace_log(TraceLogLevel::LOG_INFO, &format!("FOXIMG: {path:?} opened"));
-    }
 
-    pub fn inc(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread) {
-        if self.can_inc() {
-            self.current += 1;
-            self.update_titlebar_and_log(rl, rl_thread, self.img_path());
+        if scaleto {
+            let Some(img) = self.img_get(rl, rl_thread) else {
+                return;
+            };
+
+            let img = img.borrow();
+            rl.set_window_size(img.width(), img.height());
         }
     }
 
-    pub fn dec(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread) {
+    pub fn inc(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread, scaleto: bool) {
+        if self.can_inc() {
+            self.current += 1;
+            self.update_window(rl, rl_thread, scaleto);
+        }
+    }
+
+    pub fn dec(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread, scaleto: bool) {
         if self.can_dec() {
             self.current -= 1;
-            self.update_titlebar_and_log(rl, rl_thread, self.img_path());
+            self.update_window(rl, rl_thread, scaleto);
         }
     }
 
@@ -609,9 +619,9 @@ impl<'a> FoximgFolder<'a> {
 impl Foximg {
     fn try_load_folder(&mut self, path: &Path) -> anyhow::Result<()> {
         let path = path.canonicalize()?;
-        let images = FoximgFolder::new(self, &path).load()?;
+        let mut images = FoximgFolder::new(self, &path).load()?;
 
-        images.update_titlebar_and_log(&mut self.rl, &self.rl_thread, images.img_path());
+        images.update_window(&mut self.rl, &self.rl_thread, self.scaleto);
         self.images = Some(images);
         Ok(())
     }

@@ -586,8 +586,11 @@ impl Foximg {
         self.state.maximized = self.rl.is_window_maximized();
         self.rl.restore_window();
 
-        self.state.w = self.rl.get_screen_width();
-        self.state.h = self.rl.get_screen_height();
+        if !self.scaleto {
+            self.state.w = self.rl.get_screen_width();
+            self.state.h = self.rl.get_screen_height();
+        }
+        
         self.state.xy = {
             let position = self.rl.get_window_position();
             Some((position.x as i32, position.y as i32))

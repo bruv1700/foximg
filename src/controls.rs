@@ -167,7 +167,7 @@ impl Foximg {
                     && self.btn_bounds.mouse_on_left_btn())
                 || self.rl.is_key_pressed(KeyboardKey::KEY_A)
             {
-                images.dec(&mut self.rl, &self.rl_thread);
+                images.dec(&mut self.rl, &self.rl_thread, self.scaleto);
                 return true;
             } else if images.can_inc()
                 && (self
@@ -176,7 +176,7 @@ impl Foximg {
                     && self.btn_bounds.mouse_on_right_btn())
                 || self.rl.is_key_pressed(KeyboardKey::KEY_D)
             {
-                images.inc(&mut self.rl, &self.rl_thread);
+                images.inc(&mut self.rl, &self.rl_thread, self.scaleto);
                 return true;
             }
         }

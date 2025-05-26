@@ -1,10 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fs::{self, File, OpenOptions},
-    io,
-    path::{Path, PathBuf},
-    str::Chars, time::Duration,
+    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::Chars, time::Duration
 };
 
 use config::{FoximgConfig, FoximgIcon, FoximgSettings, FoximgState, FoximgStyle};
@@ -241,6 +238,7 @@ struct FoximgDraw<'a> {
     camera: &'a mut Camera2D,
     rl_thread: &'a RaylibThread,
     btn_bounds: FoximgBtnsBounds,
+    scaleto: bool,
 }
 
 impl<'a> FoximgDraw<'a> {
@@ -277,7 +275,7 @@ impl<'a> FoximgDraw<'a> {
 
         let screen_width = self.d.get_screen_width().as_f32();
         let screen_height = self.d.get_screen_height().as_f32();
-        let scale = {
+        let scale = if self.scaleto { 1. } else {
             let screen_ratio = screen_width / screen_height;
             let texture_ratio = img.width().as_f32() / img.height().as_f32();
 
@@ -375,6 +373,7 @@ impl<'a> FoximgDraw<'a> {
             camera: &mut foximg.camera,
             rl_thread: &foximg.rl_thread,
             btn_bounds: foximg.btn_bounds,
+            scaleto: foximg.scaleto,
         };
         d.d.clear_background(foximg.style.bg);
         f(d, foximg.images.as_mut());
@@ -393,6 +392,8 @@ struct Foximg {
     mouse_wheel: f32,
     camera: Camera2D,
 
+    scaleto: bool,
+
     rl: RaylibHandle,
     rl_thread: RaylibThread,
     instance: Option<FoximgInstance>,
@@ -405,21 +406,24 @@ impl Foximg {
         concat!("foximg ", env!("CARGO_PKG_VERSION"))
     };
 
-    pub fn init(verbose: bool) -> Self {
+    pub fn init(verbose: bool, scaleto: bool) -> Self {
         // SAFETY: As of raylib-rs 5.5.1, this always returns Ok.
         callbacks::set_trace_log_callback(foximg_log::tracelog).unwrap();
 
-        let (mut rl, rl_thread) = raylib::init()
-            .vsync()
-            .resizable()
+        let mut rl_builder = raylib::init();
+        rl_builder.vsync()
             .title(Self::TITLE)
             .log_level(if verbose {
                 TraceLogLevel::LOG_ALL
             } else {
                 TraceLogLevel::LOG_INFO
-            })
-            .build();
+            });
 
+        if !scaleto {
+            rl_builder.resizable();
+        }
+
+        let (mut rl, rl_thread) = rl_builder.build();
         rl.set_exit_key(None);
         rl.set_target_fps(60);
 
@@ -461,6 +465,7 @@ impl Foximg {
             settings,
             style,
             resources,
+            scaleto,
             rl,
             rl_thread,
             instance,
@@ -592,6 +597,7 @@ impl Drop for Foximg {
 }
 
 struct FoximgArgs<'a> {
+    scaleto: bool,
     verbose: bool,
     path: Option<&'a str>,
 }
@@ -599,13 +605,14 @@ struct FoximgArgs<'a> {
 impl<'a> FoximgArgs<'a> {
     pub fn new() -> Self {
         Self {
+            scaleto: false,
             verbose: cfg!(debug_assertions),
             path: None,
         }
     }
 
     fn run(self) {
-        let foximg = Foximg::init(self.verbose);
+        let foximg = Foximg::init(self.verbose, self.scaleto);
         foximg.run(self.path);
 
         foximg_log::tracelog(
@@ -618,6 +625,8 @@ impl<'a> FoximgArgs<'a> {
         for c in arg {
             if c == 'q' {
                 foximg_log::quiet(true);
+            } else if c == 's' {
+                self.scaleto = true;
             } else if c == 'v' {
                 self.verbose = true;
             } else {
@@ -637,6 +646,8 @@ impl<'a> FoximgArgs<'a> {
                 return self::help();
             } else if arg == "--quiet" {
                 foximg_log::quiet(true);
+            } else if arg == "--scaleto" {
+                self.scaleto = true;
             } else if arg == "--verbose" {
                 self.verbose = true;
             } else if arg.chars().nth(0) == Some('-') {
@@ -669,6 +680,7 @@ fn help() {
     eprintln!("{GREEN_COLOR}Options:{RESET_COLOR}");
     eprintln!("    {GRAY_COLOR}-h, --help     {RESET_COLOR}Print help");
     eprintln!("    {GRAY_COLOR}-q, --quiet    {RESET_COLOR}Don't print log messages");
+    eprintln!("    {GRAY_COLOR}-s, --scaleto  {RESET_COLOR}Scale window to the size of the current image");
     eprintln!("    {GRAY_COLOR}-v, --verbose  {RESET_COLOR}Make TRACE and DEBUG log messages");
 }
 
