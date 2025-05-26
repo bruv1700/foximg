@@ -480,8 +480,8 @@ impl Foximg {
     }
 
     fn create_tracelog_file(&self) {
-        if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) 
-            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL)) 
+        if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT) 
+            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)) 
             && self.rl.is_key_pressed(KeyboardKey::KEY_L) 
         {
             foximg_log::create_file();
@@ -540,6 +540,10 @@ impl Foximg {
         POLL_IMG_EVENTS.iter().find(|event| event(self));
         self.zoom_scroll_img();
         self.pan_img();
+        self.pan_img_up();
+        self.pan_img_down();
+        self.pan_img_left();
+        self.pan_img_right();
     }
 
     pub fn run(mut self, path: Option<&str>) {

@@ -3,6 +3,9 @@
 use crate::Foximg;
 use raylib::prelude::*;
 
+const MOUSE_WHEEL_MIN: f32 = 0.;
+const MOUSE_WHEEL_MAX: f32 = 25.;
+
 impl Foximg {
     /// Returns true if either left or right Shift is held down.
     fn is_shift_down(&self) -> bool {
@@ -18,8 +21,6 @@ impl Foximg {
 
     /// Zooms in the image by `current_mouse_wheel` * `ZOOM_MULTIPLIER`.
     pub fn zoom_img(&mut self, current_mouse_wheel: f32) {
-        const MOUSE_WHEEL_MIN: f32 = 0.;
-        const MOUSE_WHEEL_MAX: f32 = 25.;
         const ZOOM_MULTIPLIER: f32 = 0.4;
 
         if let Some(ref images) = self.images {
@@ -27,8 +28,8 @@ impl Foximg {
                 return;
             }
 
-            if !((current_mouse_wheel < 0. && self.mouse_wheel <= MOUSE_WHEEL_MIN)
-                || (current_mouse_wheel > 0. && self.mouse_wheel >= MOUSE_WHEEL_MAX))
+            if !((current_mouse_wheel < 0. && self.mouse_wheel <= self::MOUSE_WHEEL_MIN)
+                || (current_mouse_wheel > 0. && self.mouse_wheel >= self::MOUSE_WHEEL_MAX))
             {
                 let mouse_world_pos = self.rl.get_screen_to_world2D(self.mouse_pos, self.camera);
                 self.camera.offset = self.mouse_pos;
@@ -40,7 +41,9 @@ impl Foximg {
                     self.mouse_wheel = 0.;
                 } else {
                     self.mouse_wheel += current_mouse_wheel;
-                    self.mouse_wheel = self.mouse_wheel.clamp(MOUSE_WHEEL_MIN, MOUSE_WHEEL_MAX);
+                    self.mouse_wheel = self
+                        .mouse_wheel
+                        .clamp(self::MOUSE_WHEEL_MIN, self::MOUSE_WHEEL_MAX);
                 }
             }
         }
@@ -201,5 +204,43 @@ impl Foximg {
             delta.scale(-1.);
             self.camera.target += delta;
         }
+    }
+
+    fn pan_img_direction<F>(&mut self, vim: KeyboardKey, arrow: KeyboardKey, f: F)
+    where
+        F: FnOnce(&mut Self, f32),
+    {
+        const PAN_MIN: f32 = self::MOUSE_WHEEL_MAX / 3.;
+        const PAN_MAX: f32 = self::MOUSE_WHEEL_MAX - PAN_MIN;
+
+        if self.mouse_wheel > 0. && (self.rl.is_key_down(vim) || self.rl.is_key_down(arrow)) {
+            let d = self.mouse_wheel.clamp(PAN_MIN, PAN_MAX);
+            let ctrl = self.is_control_down();
+            f(self, if ctrl { d / 2. } else { d });
+        }
+    }
+
+    pub fn pan_img_up(&mut self) {
+        self.pan_img_direction(KeyboardKey::KEY_K, KeyboardKey::KEY_UP, |f, d| {
+            f.camera.target.y -= d
+        });
+    }
+
+    pub fn pan_img_down(&mut self) {
+        self.pan_img_direction(KeyboardKey::KEY_J, KeyboardKey::KEY_DOWN, |f, d| {
+            f.camera.target.y += d
+        });
+    }
+
+    pub fn pan_img_left(&mut self) {
+        self.pan_img_direction(KeyboardKey::KEY_H, KeyboardKey::KEY_LEFT, |f, d| {
+            f.camera.target.x -= d
+        });
+    }
+
+    pub fn pan_img_right(&mut self) {
+        self.pan_img_direction(KeyboardKey::KEY_L, KeyboardKey::KEY_RIGHT, |f, d| {
+            f.camera.target.x += d
+        });
     }
 }
