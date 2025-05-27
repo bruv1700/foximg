@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::Chars, time::Duration
+    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::Chars, sync::LazyLock, time::Duration
 };
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use config::{FoximgConfig, FoximgIcon, FoximgSettings, FoximgState, FoximgStyle};
 use images::FoximgImages;
 use menu::FoximgMenu;
@@ -392,6 +393,8 @@ struct Foximg {
     mouse_wheel: f32,
     camera: Camera2D,
 
+    // title_override: Option<String>,
+    title_format: String,
     scaleto: bool,
 
     rl: RaylibHandle,
@@ -400,19 +403,12 @@ struct Foximg {
 }
 
 impl Foximg {
-    pub const TITLE: &str = if cfg!(debug_assertions) {
-        concat!("foximg ", env!("CARGO_PKG_VERSION"), " [DEBUG BUILD]")
-    } else {
-        concat!("foximg ", env!("CARGO_PKG_VERSION"))
-    };
-
-    pub fn init(verbose: bool, scaleto: bool) -> Self {
+    pub fn init(verbose: bool, title_format: String, scaleto: bool) -> Self {
         // SAFETY: As of raylib-rs 5.5.1, this always returns Ok.
         callbacks::set_trace_log_callback(foximg_log::tracelog).unwrap();
 
         let mut rl_builder = raylib::init();
         rl_builder.vsync()
-            .title(Self::TITLE)
             .log_level(if verbose {
                 TraceLogLevel::LOG_ALL
             } else {
@@ -426,6 +422,9 @@ impl Foximg {
         let (mut rl, rl_thread) = rl_builder.build();
         rl.set_exit_key(None);
         rl.set_target_fps(60);
+
+        let title = self::format_title(&mut rl, &rl_thread, &title_format, None);
+        rl.set_window_title(&rl_thread, &title);
 
         let instance = FoximgInstance::new(&mut rl);
 
@@ -465,6 +464,7 @@ impl Foximg {
             settings,
             style,
             resources,
+            title_format,
             scaleto,
             rl,
             rl_thread,
@@ -600,8 +600,75 @@ impl Drop for Foximg {
     }
 }
 
+pub fn format_title(
+    rl: &mut RaylibHandle,
+    rl_thread: &RaylibThread,
+    title: &str,
+    mut images: Option<&mut FoximgImages>,
+) -> String {
+    const PATTERN_PATH: usize = 0;
+    const PATTERN_HEIGHT: usize = 1;
+    const PATTERN_NAME: usize = 2;
+    const PATTERN_IMAGES_LEN: usize = 3;
+    const PATTERN_IMAGES_CURRENT: usize = 4;
+    const PATTERN_WIDTH: usize = 5;
+    const PATTERNS_LEN: usize = 8;
+
+    static AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+        static TITLE_PATTERNS: [&str; PATTERNS_LEN] = ["%f", "%h", "%n", "%l", "%u", "%w", "%v", "\\%"];
+
+        AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostFirst)
+            .build(TITLE_PATTERNS)
+            .unwrap()
+    });
+
+    let mut replace_with: [String; PATTERNS_LEN] = [
+        String::new(),
+        "0".into(),
+        String::new(),
+        "0".into(),
+        "0".into(),
+        "0".into(),
+        if cfg!(debug_assertions) {
+            concat!(env!("CARGO_PKG_VERSION"), " [DEBUG BUILD]")
+        } else {
+            env!("CARGO_PKG_VERSION")
+        }.into(),
+        "%".into(),
+    ];
+
+    if let Some(ref mut images) = images {
+        let path = images.img_path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        replace_with[PATTERN_PATH] = path.display().to_string();
+        replace_with[PATTERN_NAME] = name;
+        replace_with[PATTERN_IMAGES_LEN] = images.len().to_string();
+        replace_with[PATTERN_IMAGES_CURRENT] = images.img_current().to_string();
+        images.img_with(rl, rl_thread, |img| {
+            replace_with[PATTERN_HEIGHT] = img.height().to_string();
+            replace_with[PATTERN_WIDTH] = img.width().to_string();
+        });
+    }
+
+    let title = AC.replace_all(title, &replace_with);
+    title
+        .split("%!")
+        .enumerate()
+        .filter(|(i, _)| images.is_some() || i % 2 == 0)
+        .map(|(_, title)| title)
+        .collect::<Vec<_>>()
+        .concat()
+}
+
 struct FoximgArgs<'a> {
     scaleto: bool,
+    title: Option<&'a str>,
     verbose: bool,
     path: Option<&'a str>,
 }
@@ -610,15 +677,20 @@ impl<'a> FoximgArgs<'a> {
     pub fn new() -> Self {
         Self {
             scaleto: false,
+            title: None,
             verbose: cfg!(debug_assertions),
             path: None,
         }
     }
 
     fn run(self) {
-        let foximg = Foximg::init(self.verbose, self.scaleto);
-        foximg.run(self.path);
+        let foximg = Foximg::init(
+            self.verbose, 
+            self.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
+            self.scaleto
+        );
 
+        foximg.run(self.path);
         foximg_log::tracelog(
             TraceLogLevel::LOG_INFO,
             "FOXIMG: Foximg uninitialized successfully. Goodbye!",
@@ -652,6 +724,8 @@ impl<'a> FoximgArgs<'a> {
                 foximg_log::quiet(true);
             } else if arg == "--scaleto" {
                 self.scaleto = true;
+            } else if let Some(title) = arg.strip_prefix("--title=") {
+                self.title = Some(title);
             } else if arg == "--verbose" {
                 self.verbose = true;
             } else if arg.chars().nth(0) == Some('-') {
@@ -682,10 +756,20 @@ fn help() {
     eprintln!("{GREEN_COLOR}Usage:{RESET_COLOR}");
     eprintln!("    foximg {GRAY_COLOR}[OPTION...] [PATH]{RESET_COLOR}");
     eprintln!("{GREEN_COLOR}Options:{RESET_COLOR}");
-    eprintln!("    {GRAY_COLOR}-h, --help     {RESET_COLOR}Print help");
-    eprintln!("    {GRAY_COLOR}-q, --quiet    {RESET_COLOR}Don't print log messages");
-    eprintln!("    {GRAY_COLOR}-s, --scaleto  {RESET_COLOR}Scale window to the size of the current image");
-    eprintln!("    {GRAY_COLOR}-v, --verbose  {RESET_COLOR}Make TRACE and DEBUG log messages");
+    eprintln!("    {GRAY_COLOR}-h, --help          {RESET_COLOR}Print help");
+    eprintln!("    {GRAY_COLOR}-q, --quiet         {RESET_COLOR}Don't print log messages");
+    eprintln!("    {GRAY_COLOR}-s, --scaleto       {RESET_COLOR}Scale window to the size of the current image");
+    eprintln!("    {GRAY_COLOR}    --title=FORMAT  {RESET_COLOR}Set window's title");
+    eprintln!("    {GRAY_COLOR}-v, --verbose       {RESET_COLOR}Make TRACE and DEBUG log messages");
+    eprintln!("\n{GREEN_COLOR}FORMAT specifiers:{RESET_COLOR}");
+    eprintln!("    {GRAY_COLOR}%f  {RESET_COLOR}Current image's path");
+    eprintln!("    {GRAY_COLOR}%h  {RESET_COLOR}Current image's height");
+    eprintln!("    {GRAY_COLOR}%n  {RESET_COLOR}Current image's name");
+    eprintln!("    {GRAY_COLOR}%l  {RESET_COLOR}Number of images loaded");
+    eprintln!("    {GRAY_COLOR}%u  {RESET_COLOR}Current image's number");
+    eprintln!("    {GRAY_COLOR}%w  {RESET_COLOR}Current image's width");
+    eprintln!("    {GRAY_COLOR}%v  {RESET_COLOR}foximg's version");
+    eprintln!("    {GRAY_COLOR}%!  {RESET_COLOR}If no images, omit the text on the right side until another {GRAY_COLOR}%!{RESET_COLOR} or end of text");
 }
 
 fn main() {

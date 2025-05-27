@@ -342,20 +342,31 @@ impl FoximgImages {
         self.current > 0
     }
 
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn img_current(&self) -> usize {
+        self.current + 1
+    }
+
     pub fn img_current_string(&self) -> String {
-        format!("[{} of {}]", self.current + 1, self.paths.len())
+        format!("[{} of {}]", self.img_current(), self.len())
     }
 
     pub fn update_window(
         &mut self,
         rl: &mut RaylibHandle,
         rl_thread: &RaylibThread,
+        title_format: &str,
         scaleto: bool,
     ) {
-        let path = self.img_path();
-        let title = format!("{} {} - {path:?}", Foximg::TITLE, self.img_current_string());
+        let title = crate::format_title(rl, rl_thread, title_format, Some(self));
         rl.set_window_title(rl_thread, &title);
-        rl.trace_log(TraceLogLevel::LOG_INFO, &format!("FOXIMG: {path:?} opened"));
+        rl.trace_log(
+            TraceLogLevel::LOG_INFO,
+            &format!("FOXIMG: {:?} opened", self.img_path()),
+        );
 
         if scaleto {
             let Some(img) = self.img_get(rl, rl_thread) else {
@@ -367,17 +378,29 @@ impl FoximgImages {
         }
     }
 
-    pub fn inc(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread, scaleto: bool) {
+    pub fn inc(
+        &mut self,
+        rl: &mut RaylibHandle,
+        rl_thread: &RaylibThread,
+        title_format: &str,
+        scaleto: bool,
+    ) {
         if self.can_inc() {
             self.current += 1;
-            self.update_window(rl, rl_thread, scaleto);
+            self.update_window(rl, rl_thread, title_format, scaleto);
         }
     }
 
-    pub fn dec(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread, scaleto: bool) {
+    pub fn dec(
+        &mut self,
+        rl: &mut RaylibHandle,
+        rl_thread: &RaylibThread,
+        title_format: &str,
+        scaleto: bool,
+    ) {
         if self.can_dec() {
             self.current -= 1;
-            self.update_window(rl, rl_thread, scaleto);
+            self.update_window(rl, rl_thread, title_format, scaleto);
         }
     }
 
@@ -621,7 +644,12 @@ impl Foximg {
         let path = path.canonicalize()?;
         let mut images = FoximgFolder::new(self, &path).load()?;
 
-        images.update_window(&mut self.rl, &self.rl_thread, self.scaleto);
+        images.update_window(
+            &mut self.rl,
+            &self.rl_thread,
+            &self.title_format,
+            self.scaleto,
+        );
         self.images = Some(images);
         Ok(())
     }
