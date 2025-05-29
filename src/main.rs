@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::{Chars, FromStr}, sync::LazyLock, time::Duration
+    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::Chars, sync::LazyLock, time::Duration
 };
 
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -713,19 +713,45 @@ impl<'a> FoximgArgs<'a> {
         );
     }
 
-    fn parse_option(&mut self, arg: Chars) -> bool {
+    fn parse_long_option(&mut self, arg: &'a str) -> Result<(), Option<anyhow::Error>> {
+        if arg == "--help" {
+            return Err(None);
+        } else if arg == "--quiet" {
+            foximg_log::quiet(true);
+        } else if arg == "--scaleto" {
+            self.scaleto = true;
+        } else if let Some(state) = arg.strip_prefix("--state") {
+            return self::parse_option_with_arg(arg, state, |state| {
+                self::parse_toml_arg(&mut self.state, state)
+            });
+        } else if let Some(title) = arg.strip_prefix("--title") {
+            return self::parse_option_with_arg(arg, title, |title| {
+                self.title = Some(title);
+                Ok(())
+            });
+        } else if arg == "--verbose" {
+            self.verbose = true;
+        } else {
+            return Err(Some(anyhow::anyhow!("Unknown option \"{arg}\"")));
+        }
+        Ok(())
+    }
+
+    fn parse_short_option(&mut self, arg: Chars) -> Result<(), Option<anyhow::Error>> {
         for c in arg {
-            if c == 'q' {
+            if c == 'h' {
+                return Err(None);
+            } else if c == 'q' {
                 foximg_log::quiet(true);
             } else if c == 's' {
                 self.scaleto = true;
             } else if c == 'v' {
                 self.verbose = true;
             } else {
-                return false;
-            }
+                return Err(Some(anyhow::anyhow!("Unknown option \"-{c}\"")));
+            } 
         }
-        true
+        Ok(())
     }
 
     pub fn parse_args(mut self, args: &'a [String]) {
@@ -734,38 +760,24 @@ impl<'a> FoximgArgs<'a> {
         args.next();
 
         while let Some(arg) = args.next().map(|arg| arg.as_str()) {
-            if arg == "--help" {
-                return self::help();
-            } else if arg == "--quiet" {
-                foximg_log::quiet(true);
-            } else if arg == "--scaleto" {
-                self.scaleto = true;
-            } else if let Some(state) = arg.strip_prefix("--state=") {
-                let mut state = state.replace(';', "\n");
-                loop {
-                    if let Ok(state) = toml::from_str(&state) {
-                        self.state = Some(state);
-                    } else if Path::new(&state).exists() {
-                        state = fs::read_to_string(state).unwrap();
-                        continue;
-                    } else {
-                        return self::help();
-                    }
-                    break;
+            let is_short_option = arg.chars().nth(0) == Some('-') 
+                && arg.chars().nth(1) != Some('-');
+
+            let is_long_option = arg.chars().nth(0) == Some('-') 
+                && arg.chars().nth(1) == Some('-');
+
+            if is_long_option {
+                if let Err(e) = self.parse_long_option(arg) {
+                    return self::help(e);
                 }
-            } else if let Some(title) = arg.strip_prefix("--title=") {
-                self.title = Some(title);
-            } else if arg == "--verbose" {
-                self.verbose = true;
-            } else if arg.chars().nth(0) == Some('-') {
+            } else if is_short_option {
                 let arg = arg[1..].chars();
-                if !self.parse_option(arg) {
-                    return self::help();
+                if let Err(e) = self.parse_short_option(arg) {
+                    return self::help(e);
                 }
-            } else if self.path.is_none() {
+            } else if self.path.is_none() && !is_short_option && !is_long_option {
                 self.path = Some(arg);
-            } else {
-                return self::help();
+                break;
             }
         }
 
@@ -773,13 +785,65 @@ impl<'a> FoximgArgs<'a> {
     }
 }
 
-fn help() {
+fn parse_option_with_arg<'a, F>(
+    option: &str, 
+    option_arg: &'a str,
+    f: F,
+) -> Result<(), Option<anyhow::Error>>
+where 
+    F: FnOnce(&'a str) -> Result<(), Option<anyhow::Error>>,
+{
+    if option_arg.is_empty() {
+        return Err(Some(anyhow::anyhow!("\"{option}\" must have an argument")));
+    } else if option_arg.chars().nth(0) != Some('=') {
+        return Err(Some(anyhow::anyhow!("Unknown option \"{option}\"")));
+    }
+
+    let option_arg = &option_arg[1..];
+    f(option_arg)
+}
+
+fn parse_toml_arg<T>(arg: &mut Option<T>, toml: &str) -> Result<(), Option<anyhow::Error>>
+where 
+    T: for<'de> serde::Deserialize<'de>
+{
+    const MAX_DEPTH: i32 = 2;
+
+    let mut depth = 0;
+    let mut toml = toml.replace(';', "\n");
+    loop {
+        depth += 1;
+        if depth > MAX_DEPTH {
+            return Err(Some(anyhow::anyhow!("Reached max depth when parsing TOML file")));
+        }
+
+        match toml::from_str(&toml) {
+            Ok(state) => *arg = Some(state),
+            _ if Path::new(&toml).exists() => {
+                toml = fs::read_to_string(toml).unwrap();
+                continue;
+            },
+            Err(e) => return Err(Some(e.into())),
+        };
+                    
+        break Ok(());
+    }
+}
+
+fn help(e: Option<anyhow::Error>) {
     const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
     const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+    const ERROR_COLOR: &str = "\x1b[1m\x1b[38;5;202m";
     const GRAY_COLOR: &str = "\x1b[3m\x1b[38;5;8m";
     const GREEN_COLOR: &str = "\x1b[38;5;114m";
     const RESET_COLOR: &str = "\x1b[0m";
     const PINK_COLOR: &str = "\x1b[1m\x1b[38;5;219m";
+
+    if let Some(e) = e {
+        eprintln!("{ERROR_COLOR}ERROR: {RESET_COLOR}{e}\n");
+        eprintln!("Use \"foximg -h\" or \"foximg --help\" to see all the available options.");
+        return;
+    }
 
     eprintln!("{PINK_COLOR}foximg {FOXIMG_VERSION}:{RESET_COLOR} {FOXIMG_DESCRIPTION}\n");
     eprintln!("{GREEN_COLOR}Usage:{RESET_COLOR}");
