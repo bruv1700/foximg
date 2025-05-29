@@ -698,21 +698,6 @@ impl<'a> FoximgArgs<'a> {
         }
     }
 
-    fn run(self) {
-        let foximg = Foximg::init(
-            self.verbose, 
-            self.state,
-            self.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
-            self.scaleto
-        );
-
-        foximg.run(self.path);
-        foximg_log::tracelog(
-            TraceLogLevel::LOG_INFO,
-            "FOXIMG: Foximg uninitialized successfully. Goodbye!",
-        );
-    }
-
     fn parse_long_option(&mut self, arg: &'a str) -> Result<(), Option<anyhow::Error>> {
         if arg == "--help" {
             return Err(None);
@@ -754,7 +739,10 @@ impl<'a> FoximgArgs<'a> {
         Ok(())
     }
 
-    pub fn parse_args(mut self, args: &'a [String]) {
+    pub fn parse_args(
+        mut self, 
+        args: &'a [String]
+    ) -> Result<Box<dyn FnOnce() + 'a>, Option<anyhow::Error>> {
         let mut args = args.iter();
         // First argument always is the application path.
         args.next();
@@ -768,12 +756,12 @@ impl<'a> FoximgArgs<'a> {
 
             if is_long_option {
                 if let Err(e) = self.parse_long_option(arg) {
-                    return self::help(e);
+                    return Err(e);
                 }
             } else if is_short_option {
                 let arg = arg[1..].chars();
                 if let Err(e) = self.parse_short_option(arg) {
-                    return self::help(e);
+                    return Err(e);
                 }
             } else if self.path.is_none() && !is_short_option && !is_long_option {
                 self.path = Some(arg);
@@ -781,7 +769,20 @@ impl<'a> FoximgArgs<'a> {
             }
         }
 
-        self.run();
+        Ok(Box::new(move || {
+            let foximg = Foximg::init(
+                self.verbose, 
+                self.state,
+                self.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
+                self.scaleto
+            );
+            
+            foximg.run(self.path);
+            foximg_log::tracelog(
+                TraceLogLevel::LOG_INFO,
+                "FOXIMG: Foximg uninitialized successfully. Goodbye!",
+            );
+        }))
     }
 }
 
@@ -830,6 +831,44 @@ where
     }
 }
 
+fn main() {
+    std::panic::set_hook(Box::new(foximg_log::panic));
+
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    if let Err(e) = self::set_vt() {
+        foximg_log::tracelog(
+            TraceLogLevel::LOG_WARNING,
+            "FOXIMG: Failed to enable virtual terminal processing. Log output is not guaranteed to look elligible:",
+        );
+        foximg_log::tracelog(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+    }
+
+    let args: Vec<String> = std::env::args().collect();
+    match FoximgArgs::new().parse_args(&args) {
+        Ok(run) => run(),
+        Err(e) => self::help(e),
+    }
+}
+
+#[cfg(all(debug_assertions, target_os = "windows"))]
+fn set_vt() -> windows::core::Result<()> {
+    use windows::Win32::System::Console::{
+        CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle,
+        STD_OUTPUT_HANDLE, SetConsoleMode,
+    };
+
+    unsafe {
+        let hout = GetStdHandle(STD_OUTPUT_HANDLE)?;
+        let mut mode = CONSOLE_MODE::default();
+
+        GetConsoleMode(hout, &mut mode)?;
+        mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+
+        SetConsoleMode(hout, mode)?;
+    }
+    Ok(())
+}
+
 fn help(e: Option<anyhow::Error>) {
     const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
     const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
@@ -866,39 +905,4 @@ fn help(e: Option<anyhow::Error>) {
     eprintln!("    {GRAY_COLOR}%w  {RESET_COLOR}Current image's width");
     eprintln!("    {GRAY_COLOR}%v  {RESET_COLOR}foximg's version");
     eprintln!("    {GRAY_COLOR}%!  {RESET_COLOR}If no images, omit the text on the right side until another {GRAY_COLOR}%!{RESET_COLOR} or end of text");
-}
-
-fn main() {
-    std::panic::set_hook(Box::new(foximg_log::panic));
-
-    #[cfg(all(debug_assertions, target_os = "windows"))]
-    if let Err(e) = self::set_vt() {
-        foximg_log::tracelog(
-            TraceLogLevel::LOG_WARNING,
-            "FOXIMG: Failed to enable virtual terminal processing. Log output is not guaranteed to look elligible:",
-        );
-        foximg_log::tracelog(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
-    }
-
-    let args: Vec<String> = std::env::args().collect();
-    FoximgArgs::new().parse_args(&args);
-}
-
-#[cfg(all(debug_assertions, target_os = "windows"))]
-fn set_vt() -> windows::core::Result<()> {
-    use windows::Win32::System::Console::{
-        CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle,
-        STD_OUTPUT_HANDLE, SetConsoleMode,
-    };
-
-    unsafe {
-        let hout = GetStdHandle(STD_OUTPUT_HANDLE)?;
-        let mut mode = CONSOLE_MODE::default();
-
-        GetConsoleMode(hout, &mut mode)?;
-        mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-
-        SetConsoleMode(hout, mode)?;
-    }
-    Ok(())
 }
