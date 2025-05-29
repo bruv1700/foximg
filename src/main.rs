@@ -679,7 +679,15 @@ pub fn format_title(
         .concat()
 }
 
+enum FoximgMode {
+    Help(Option<anyhow::Error>),
+    Version,
+    Normal,
+}
+
 struct FoximgArgs<'a> {
+    mode: FoximgMode,
+
     scaleto: bool,
     state: Option<FoximgState>,
     title: Option<&'a str>,
@@ -690,6 +698,7 @@ struct FoximgArgs<'a> {
 impl<'a> FoximgArgs<'a> {
     pub fn new() -> Self {
         Self {
+            mode: FoximgMode::Normal,
             scaleto: false,
             state: None,
             title: None,
@@ -716,6 +725,8 @@ impl<'a> FoximgArgs<'a> {
             });
         } else if arg == "--verbose" {
             self.verbose = true;
+        } else if arg == "--version" {
+            self.mode = FoximgMode::Version;
         } else {
             return Err(Some(anyhow::anyhow!("Unknown option \"{arg}\"")));
         }
@@ -739,10 +750,7 @@ impl<'a> FoximgArgs<'a> {
         Ok(())
     }
 
-    pub fn parse_args(
-        mut self, 
-        args: &'a [String]
-    ) -> Result<Box<dyn FnOnce() + 'a>, Option<anyhow::Error>> {
+    pub fn parse_args(mut self, args: &'a [String]) -> Box<dyn FnOnce() + 'a> {
         let mut args = args.iter();
         // First argument always is the application path.
         args.next();
@@ -756,12 +764,12 @@ impl<'a> FoximgArgs<'a> {
 
             if is_long_option {
                 if let Err(e) = self.parse_long_option(arg) {
-                    return Err(e);
+                    self.mode = FoximgMode::Help(e);
                 }
             } else if is_short_option {
                 let arg = arg[1..].chars();
                 if let Err(e) = self.parse_short_option(arg) {
-                    return Err(e);
+                    self.mode = FoximgMode::Help(e);
                 }
             } else if self.path.is_none() && !is_short_option && !is_long_option {
                 self.path = Some(arg);
@@ -769,20 +777,11 @@ impl<'a> FoximgArgs<'a> {
             }
         }
 
-        Ok(Box::new(move || {
-            let foximg = Foximg::init(
-                self.verbose, 
-                self.state,
-                self.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
-                self.scaleto
-            );
-            
-            foximg.run(self.path);
-            foximg_log::tracelog(
-                TraceLogLevel::LOG_INFO,
-                "FOXIMG: Foximg uninitialized successfully. Goodbye!",
-            );
-        }))
+        match self.mode {
+            FoximgMode::Help(e) => Box::new(|| self::help(e)),
+            FoximgMode::Version => Box::new(|| println!("{}", env!("CARGO_PKG_VERSION"))),
+            FoximgMode::Normal => Box::new(|| self::run(self)),
+        }
     }
 }
 
@@ -844,10 +843,7 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    match FoximgArgs::new().parse_args(&args) {
-        Ok(run) => run(),
-        Err(e) => self::help(e),
-    }
+    FoximgArgs::new().parse_args(&args)()
 }
 
 #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -894,6 +890,7 @@ fn help(e: Option<anyhow::Error>) {
     eprintln!("    {GRAY_COLOR}    --state=TOML    {RESET_COLOR}Set window's state according to the format in foximg_state.toml");
     eprintln!("    {GRAY_COLOR}    --title=FORMAT  {RESET_COLOR}Set window's title");
     eprintln!("    {GRAY_COLOR}-v, --verbose       {RESET_COLOR}Make TRACE and DEBUG log messages");
+    eprintln!("    {GRAY_COLOR}    --version       {RESET_COLOR}Print foximg's version");
     eprintln!("\n{GREEN_COLOR}TOML:{RESET_COLOR}");
     eprintln!("    Use either a TOML document with newlines substituted by semicolons, or a path to a TOML document.");
     eprintln!("\n{GREEN_COLOR}FORMAT specifiers:{RESET_COLOR}");
@@ -905,4 +902,19 @@ fn help(e: Option<anyhow::Error>) {
     eprintln!("    {GRAY_COLOR}%w  {RESET_COLOR}Current image's width");
     eprintln!("    {GRAY_COLOR}%v  {RESET_COLOR}foximg's version");
     eprintln!("    {GRAY_COLOR}%!  {RESET_COLOR}If no images, omit the text on the right side until another {GRAY_COLOR}%!{RESET_COLOR} or end of text");
+}
+
+fn run(args: FoximgArgs) {
+    let foximg = Foximg::init(
+        args.verbose, 
+        args.state,
+        args.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
+        args.scaleto
+    );
+    
+    foximg.run(args.path);
+    foximg_log::tracelog(
+        TraceLogLevel::LOG_INFO,
+        "FOXIMG: Foximg uninitialized successfully. Goodbye!",
+    );
 }
