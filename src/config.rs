@@ -283,6 +283,8 @@ impl FoximgConfig for FoximgSettings {
 }
 
 #[derive(Serialize, Deserialize)]
+// I intentionally choose not to annotate this with #[serde(default)] because I actually do want the
+// effect of the name and author fields being None when the style is passed by command line arguments.
 pub struct FoximgStyleOptionals {
     pub name: Option<Cow<'static, str>>,
     pub author: Option<Cow<'static, str>>,
@@ -318,6 +320,7 @@ impl Default for FoximgStyleOptionals {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct FoximgStyle {
     #[serde(flatten)]
     pub optionals: FoximgStyleOptionals,

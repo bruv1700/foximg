@@ -406,6 +406,7 @@ impl Foximg {
     pub fn init(
         verbose: bool, 
         override_state: Option<FoximgState>, 
+        override_style: Option<FoximgStyle>,
         title_format: String, 
         scaleto: bool
     ) -> Self {
@@ -441,7 +442,13 @@ impl Foximg {
         // Style must be initialized before state because on Windows the titlebar's color gets updated
         // only once it's resized. The window can't get resized if it's already maximized, so the
         // window appears in light mode on startup otherwise.
-        let style = FoximgStyle::new(&mut rl);
+        let style = override_style
+            .inspect(|style| {
+                rl.trace_log(TraceLogLevel::LOG_INFO, "Loaded style from arguments:");
+                style.update(&mut rl);
+            })
+            .unwrap_or_else(|| FoximgStyle::new(&mut rl));
+
         let state = if instance
             .as_ref()
             .is_some_and(|instance| matches!(instance.owner(), Ok(true)))
@@ -690,6 +697,7 @@ struct FoximgArgs<'a> {
 
     scaleto: bool,
     state: Option<FoximgState>,
+    style: Option<FoximgStyle>,
     title: Option<&'a str>,
     verbose: bool,
     path: Option<&'a str>,
@@ -701,6 +709,7 @@ impl<'a> FoximgArgs<'a> {
             mode: FoximgMode::Normal,
             scaleto: false,
             state: None,
+            style: None,
             title: None,
             verbose: cfg!(debug_assertions),
             path: None,
@@ -717,6 +726,10 @@ impl<'a> FoximgArgs<'a> {
         } else if let Some(state) = arg.strip_prefix("--state") {
             return self::parse_option_with_arg(arg, state, |state| {
                 self::parse_toml_arg(&mut self.state, state)
+            });
+        } else if let Some(style) = arg.strip_prefix("--style") {
+            return self::parse_option_with_arg(arg, style, |style| {
+                self::parse_toml_arg(&mut self.style, style)
             });
         } else if let Some(title) = arg.strip_prefix("--title") {
             return self::parse_option_with_arg(arg, title, |title| {
@@ -888,6 +901,7 @@ fn help(e: Option<anyhow::Error>) {
     eprintln!("    {GRAY_COLOR}-q, --quiet         {RESET_COLOR}Don't print log messages");
     eprintln!("    {GRAY_COLOR}-s, --scaleto       {RESET_COLOR}Scale window to the size of the current image");
     eprintln!("    {GRAY_COLOR}    --state=TOML    {RESET_COLOR}Set window's state according to the format in foximg_state.toml");
+    eprintln!("    {GRAY_COLOR}    --style=TOML    {RESET_COLOR}Set window's style according to the format in foximg_style.toml");
     eprintln!("    {GRAY_COLOR}    --title=FORMAT  {RESET_COLOR}Set window's title");
     eprintln!("    {GRAY_COLOR}-v, --verbose       {RESET_COLOR}Make TRACE and DEBUG log messages");
     eprintln!("    {GRAY_COLOR}    --version       {RESET_COLOR}Print foximg's version");
@@ -908,6 +922,7 @@ fn run(args: FoximgArgs) {
     let foximg = Foximg::init(
         args.verbose, 
         args.state,
+        args.style,
         args.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
         args.scaleto
     );
