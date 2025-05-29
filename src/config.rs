@@ -193,6 +193,7 @@ where
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct FoximgState {
     pub w: i32,
     pub h: i32,

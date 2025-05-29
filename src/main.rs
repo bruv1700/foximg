@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::Chars, sync::LazyLock, time::Duration
+    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::{Chars, FromStr}, sync::LazyLock, time::Duration
 };
 
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -403,7 +403,12 @@ struct Foximg {
 }
 
 impl Foximg {
-    pub fn init(verbose: bool, title_format: String, scaleto: bool) -> Self {
+    pub fn init(
+        verbose: bool, 
+        override_state: Option<FoximgState>, 
+        title_format: String, 
+        scaleto: bool
+    ) -> Self {
         // SAFETY: As of raylib-rs 5.5.1, this always returns Ok.
         callbacks::set_trace_log_callback(foximg_log::tracelog).unwrap();
 
@@ -426,7 +431,12 @@ impl Foximg {
         let title = self::format_title(&mut rl, &rl_thread, &title_format, None);
         rl.set_window_title(&rl_thread, &title);
 
-        let instance = FoximgInstance::new(&mut rl);
+        // We don't remember state if it's manually overriden using arguments.
+        let instance = if override_state.is_some() {
+            None
+        } else {
+            FoximgInstance::new(&mut rl)
+        };
 
         // Style must be initialized before state because on Windows the titlebar's color gets updated
         // only once it's resized. The window can't get resized if it's already maximized, so the
@@ -438,7 +448,10 @@ impl Foximg {
         {
             FoximgState::new(&mut rl)
         } else {
-            FoximgState::default()
+            override_state.inspect(|state| {
+                rl.trace_log(TraceLogLevel::LOG_INFO, "Loaded state from arguments:");
+                state.update(&mut rl);
+            }).unwrap_or_default()
         };
 
         let settings = FoximgSettings::new(&mut rl);
@@ -668,6 +681,7 @@ pub fn format_title(
 
 struct FoximgArgs<'a> {
     scaleto: bool,
+    state: Option<FoximgState>,
     title: Option<&'a str>,
     verbose: bool,
     path: Option<&'a str>,
@@ -677,6 +691,7 @@ impl<'a> FoximgArgs<'a> {
     pub fn new() -> Self {
         Self {
             scaleto: false,
+            state: None,
             title: None,
             verbose: cfg!(debug_assertions),
             path: None,
@@ -686,6 +701,7 @@ impl<'a> FoximgArgs<'a> {
     fn run(self) {
         let foximg = Foximg::init(
             self.verbose, 
+            self.state,
             self.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
             self.scaleto
         );
@@ -724,6 +740,19 @@ impl<'a> FoximgArgs<'a> {
                 foximg_log::quiet(true);
             } else if arg == "--scaleto" {
                 self.scaleto = true;
+            } else if let Some(state) = arg.strip_prefix("--state=") {
+                let mut state = state.replace(';', "\n");
+                loop {
+                    if let Ok(state) = toml::from_str(&state) {
+                        self.state = Some(state);
+                    } else if Path::new(&state).exists() {
+                        state = fs::read_to_string(state).unwrap();
+                        continue;
+                    } else {
+                        return self::help();
+                    }
+                    break;
+                }
             } else if let Some(title) = arg.strip_prefix("--title=") {
                 self.title = Some(title);
             } else if arg == "--verbose" {
@@ -759,8 +788,11 @@ fn help() {
     eprintln!("    {GRAY_COLOR}-h, --help          {RESET_COLOR}Print help");
     eprintln!("    {GRAY_COLOR}-q, --quiet         {RESET_COLOR}Don't print log messages");
     eprintln!("    {GRAY_COLOR}-s, --scaleto       {RESET_COLOR}Scale window to the size of the current image");
+    eprintln!("    {GRAY_COLOR}    --state=TOML    {RESET_COLOR}Set window's state according to the format in foximg_state.toml");
     eprintln!("    {GRAY_COLOR}    --title=FORMAT  {RESET_COLOR}Set window's title");
     eprintln!("    {GRAY_COLOR}-v, --verbose       {RESET_COLOR}Make TRACE and DEBUG log messages");
+    eprintln!("\n{GREEN_COLOR}TOML:{RESET_COLOR}");
+    eprintln!("    Use either a TOML document with newlines substituted by semicolons, or a path to a TOML document.");
     eprintln!("\n{GREEN_COLOR}FORMAT specifiers:{RESET_COLOR}");
     eprintln!("    {GRAY_COLOR}%f  {RESET_COLOR}Current image's path");
     eprintln!("    {GRAY_COLOR}%h  {RESET_COLOR}Current image's height");
