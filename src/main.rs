@@ -6,6 +6,7 @@ use std::{
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use config::{FoximgConfig, FoximgIcon, FoximgSettings, FoximgState, FoximgStyle};
+use foximg_log::FoximgLogOut;
 use images::FoximgImages;
 use menu::FoximgMenu;
 use raylib::prelude::*;
@@ -499,22 +500,12 @@ impl Foximg {
         }
     }
 
-    fn create_tracelog_file(&self) {
-        if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT) 
-            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)) 
-            && self.rl.is_key_pressed(KeyboardKey::KEY_L) 
-        {
-            foximg_log::create_file();
-        }
-    }
-
     fn update(&mut self) {
         if let Some(ref mut instsance) = self.instance {
             instsance.update(&self.rl);
         }
 
         self.toggle_fullscreen();
-        self.create_tracelog_file();
         self.mouse_pos = self.rl.get_mouse_position();
     }
 
@@ -919,6 +910,7 @@ fn help(e: Option<anyhow::Error>) {
 }
 
 fn run(args: FoximgArgs) {
+    foximg_log::out(FoximgLogOut::Stdout(std::io::stdout()));
     let foximg = Foximg::init(
         args.verbose, 
         args.state,
