@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fs::{self, File, OpenOptions}, io, path::{Path, PathBuf}, str::Chars, sync::LazyLock, time::Duration
+    fs::{self, File, OpenOptions}, io::{self, IsTerminal, Write}, path::{Path, PathBuf}, str::Chars, sync::LazyLock, time::Duration
 };
 
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -782,7 +782,7 @@ impl<'a> FoximgArgs<'a> {
         }
 
         match self.mode {
-            FoximgMode::Help(e) => Box::new(|| self::help(e)),
+            FoximgMode::Help(e) => Box::new(|| self::help(e).unwrap()),
             FoximgMode::Version => Box::new(|| println!("{}", env!("CARGO_PKG_VERSION"))),
             FoximgMode::Normal => Box::new(|| self::run(self)),
         }
@@ -869,44 +869,55 @@ fn set_vt() -> windows::core::Result<()> {
     Ok(())
 }
 
-fn help(e: Option<anyhow::Error>) {
+fn help(e: Option<anyhow::Error>) -> io::Result<()> {
     const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
     const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
-    const ERROR_COLOR: &str = "\x1b[1m\x1b[38;5;202m";
-    const GRAY_COLOR: &str = "\x1b[3m\x1b[38;5;8m";
-    const GREEN_COLOR: &str = "\x1b[38;5;114m";
-    const RESET_COLOR: &str = "\x1b[0m";
-    const PINK_COLOR: &str = "\x1b[1m\x1b[38;5;219m";
 
-    if let Some(e) = e {
-        eprintln!("{ERROR_COLOR}ERROR: {RESET_COLOR}{e}\n");
-        eprintln!("Use \"foximg -h\" or \"foximg --help\" to see all the available options.");
-        return;
+    let mut error_color = String::new();
+    let mut gray_color = String::new();
+    let mut green_color = String::new();
+    let mut reset_color = String::new();
+    let mut pink_color = String::new();
+    let mut out = std::io::stdout();
+
+    if out.is_terminal() {
+        error_color = "\x1b[1m\x1b[38;5;202m".into();
+        gray_color = "\x1b[3m\x1b[38;5;8m".into();
+        green_color = "\x1b[38;5;114m".into();
+        reset_color = "\x1b[0m".into();
+        pink_color = "\x1b[1m\x1b[38;5;219m".into();
     }
 
-    eprintln!("{PINK_COLOR}foximg {FOXIMG_VERSION}:{RESET_COLOR} {FOXIMG_DESCRIPTION}\n");
-    eprintln!("{GREEN_COLOR}Usage:{RESET_COLOR}");
-    eprintln!("    foximg {GRAY_COLOR}[OPTION...] [PATH]{RESET_COLOR}");
-    eprintln!("{GREEN_COLOR}Options:{RESET_COLOR}");
-    eprintln!("    {GRAY_COLOR}-h, --help          {RESET_COLOR}Print help");
-    eprintln!("    {GRAY_COLOR}-q, --quiet         {RESET_COLOR}Don't print log messages");
-    eprintln!("    {GRAY_COLOR}-s, --scaleto       {RESET_COLOR}Scale window to the size of the current image");
-    eprintln!("    {GRAY_COLOR}    --state=TOML    {RESET_COLOR}Set window's state according to the format in foximg_state.toml");
-    eprintln!("    {GRAY_COLOR}    --style=TOML    {RESET_COLOR}Set window's style according to the format in foximg_style.toml");
-    eprintln!("    {GRAY_COLOR}    --title=FORMAT  {RESET_COLOR}Set window's title");
-    eprintln!("    {GRAY_COLOR}-v, --verbose       {RESET_COLOR}Make TRACE and DEBUG log messages");
-    eprintln!("    {GRAY_COLOR}    --version       {RESET_COLOR}Print foximg's version");
-    eprintln!("\n{GREEN_COLOR}TOML:{RESET_COLOR}");
-    eprintln!("    Use either a TOML document with newlines substituted by semicolons, or a path to a TOML document.");
-    eprintln!("\n{GREEN_COLOR}FORMAT specifiers:{RESET_COLOR}");
-    eprintln!("    {GRAY_COLOR}%f  {RESET_COLOR}Current image's path");
-    eprintln!("    {GRAY_COLOR}%h  {RESET_COLOR}Current image's height");
-    eprintln!("    {GRAY_COLOR}%n  {RESET_COLOR}Current image's name");
-    eprintln!("    {GRAY_COLOR}%l  {RESET_COLOR}Number of images loaded");
-    eprintln!("    {GRAY_COLOR}%u  {RESET_COLOR}Current image's number");
-    eprintln!("    {GRAY_COLOR}%w  {RESET_COLOR}Current image's width");
-    eprintln!("    {GRAY_COLOR}%v  {RESET_COLOR}foximg's version");
-    eprintln!("    {GRAY_COLOR}%!  {RESET_COLOR}If no images, omit the text on the right side until another {GRAY_COLOR}%!{RESET_COLOR} or end of text");
+    if let Some(e) = e {
+        writeln!(out, "{error_color}ERROR: {reset_color}{e}\n")?;
+        writeln!(out, "Use \"foximg -h\" or \"foximg --help\" to see all the available options.")?;
+        return Ok(());
+    }
+
+    writeln!(out, "{pink_color}foximg {FOXIMG_VERSION}:{reset_color} {FOXIMG_DESCRIPTION}\n")?;
+    writeln!(out, "{green_color}Usage:{reset_color}")?;
+    writeln!(out, "    foximg {gray_color}[OPTION...] [PATH]{reset_color}")?;
+    writeln!(out, "{green_color}Options:{reset_color}")?;
+    writeln!(out, "    {gray_color}-h, --help          {reset_color}Print help")?;
+    writeln!(out, "    {gray_color}-q, --quiet         {reset_color}Don't print log messages")?;
+    writeln!(out, "    {gray_color}-s, --scaleto       {reset_color}Scale window to the size of the current image")?;
+    writeln!(out, "    {gray_color}    --state=TOML    {reset_color}Set window's state according to the format in foximg_state.toml")?;
+    writeln!(out, "    {gray_color}    --style=TOML    {reset_color}Set window's style according to the format in foximg_style.toml")?;
+    writeln!(out, "    {gray_color}    --title=FORMAT  {reset_color}Set window's title")?;
+    writeln!(out, "    {gray_color}-v, --verbose       {reset_color}Make TRACE and DEBUG log messages")?;
+    writeln!(out, "    {gray_color}    --version       {reset_color}Print foximg's version")?;
+    writeln!(out, "\n{green_color}TOML:{reset_color}")?;
+    writeln!(out, "    Use either a TOML document with newlines substituted by semicolons, or a path to a TOML document.")?;
+    writeln!(out, "\n{green_color}FORMAT specifiers:{reset_color}")?;
+    writeln!(out, "    {gray_color}%f  {reset_color}Current image's path")?;
+    writeln!(out, "    {gray_color}%h  {reset_color}Current image's height")?;
+    writeln!(out, "    {gray_color}%n  {reset_color}Current image's name")?;
+    writeln!(out, "    {gray_color}%l  {reset_color}Number of images loaded")?;
+    writeln!(out, "    {gray_color}%u  {reset_color}Current image's number")?;
+    writeln!(out, "    {gray_color}%w  {reset_color}Current image's width")?;
+    writeln!(out, "    {gray_color}%v  {reset_color}foximg's version")?;
+    writeln!(out, "    {gray_color}%!  {reset_color}If no images, omit the text on the right side until another {gray_color}%!{reset_color} or end of text")?;
+    Ok(())
 }
 
 fn run(args: FoximgArgs) {
