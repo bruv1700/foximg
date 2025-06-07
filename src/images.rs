@@ -450,6 +450,8 @@ impl FoximgImages {
     }
 }
 
+type FoximgFolderIter = Box<dyn Iterator<Item = Result<PathBuf, Option<std::io::Error>>>>;
+
 /// Intermediate struct that helps with loading folders into Foximg galleries.
 struct FoximgFolder<'a> {
     f: &'a mut Foximg,
@@ -507,14 +509,6 @@ impl<'a> FoximgFolder<'a> {
         None
     }
 
-    /// Creates an iterator over `folder` if it's `Some` or if it's accessible.
-    fn get_folder_iter(&self) -> anyhow::Result<ReadDir> {
-        self.folder.map_or_else(
-            || Err(anyhow::anyhow!("File does not have a directory",)),
-            |folder| folder.read_dir().map_err(anyhow::Error::from),
-        )
-    }
-
     /// Push a valid image and increment `i`.
     fn push_img(&mut self, i: &mut usize, current_path: PathBuf, loader: FoximgImageLoader) {
         if current_path == self.path {
@@ -527,41 +521,22 @@ impl<'a> FoximgFolder<'a> {
     }
 
     /// Iterates through the folder and pushes any images it can. Returns how many images it pushed.
-    fn push_images(&mut self, folder_iter: ReadDir) -> usize {
+    fn push_images(&mut self, iter: FoximgFolderIter) -> usize {
         let mut i = 0;
-        for file in folder_iter {
-            let file = match file {
-                Ok(file) => file,
+        for current_path in iter {
+            let current_path = match current_path {
+                Ok(current_path) => current_path,
                 Err(e) => {
-                    self.f
-                        .rl
-                        .trace_log(TraceLogLevel::LOG_WARNING, "FOXIMG: Couldn't open file:");
-                    self.f
-                        .rl
-                        .trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+                    if let Some(e) = e {
+                        self.f.rl.trace_log(
+                            TraceLogLevel::LOG_WARNING,
+                            &format!("FOXIMG: Failed to load file: {e}"),
+                        );
+                    }
                     continue;
                 }
             };
 
-            let file_type = match file.file_type() {
-                Ok(file_type) => file_type,
-                Err(e) => {
-                    self.f.rl.trace_log(
-                        TraceLogLevel::LOG_WARNING,
-                        "FOXIMG: Couldn't get file type:",
-                    );
-                    self.f
-                        .rl
-                        .trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
-                    continue;
-                }
-            };
-
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let current_path = file.path();
             let Some(ext) = current_path.extension() else {
                 continue;
             };
@@ -610,14 +585,12 @@ impl<'a> FoximgFolder<'a> {
     /// - `path` doesn't lie inside a directory
     /// - An IO error
     /// - The folder doesn't have any valid images.
-    pub fn load(mut self) -> anyhow::Result<FoximgImages> {
+    pub fn load(mut self, iter: FoximgFolderIter) -> anyhow::Result<FoximgImages> {
         if let Some(images) = self.skip_reread() {
             return Ok(images);
         }
 
-        let folder_iter = self.get_folder_iter()?;
-        let i = self.push_images(folder_iter);
-
+        let i = self.push_images(iter);
         if i > 0 {
             let current = self
                 .current
@@ -640,9 +613,49 @@ impl<'a> FoximgFolder<'a> {
 }
 
 impl Foximg {
+    fn get_path_iter(&self, path: &Path) -> anyhow::Result<FoximgFolderIter> {
+        if self.lock.is_some() {
+            Ok(Box::new([Ok(path.to_path_buf())].into_iter()))
+        } else {
+            struct FolderIter(ReadDir);
+            impl Iterator for FolderIter {
+                type Item = Result<PathBuf, Option<std::io::Error>>;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    let Some(file) = self.0.next() else {
+                        return None;
+                    };
+
+                    let file = match file {
+                        Ok(file) => file,
+                        Err(e) => return Some(Err(Some(e))),
+                    };
+
+                    let file_type = match file.file_type() {
+                        Ok(file_type) => file_type,
+                        Err(e) => return Some(Err(Some(e))),
+                    };
+
+                    if !file_type.is_file() {
+                        Some(Err(None))
+                    } else {
+                        Some(Ok(file.path()))
+                    }
+                }
+            }
+
+            Ok(Box::new(FolderIter(
+                path.parent()
+                    .ok_or_else(|| anyhow::anyhow!("File does not have a directory",))?
+                    .read_dir()?,
+            )))
+        }
+    }
+
     fn try_load_folder(&mut self, path: &Path) -> anyhow::Result<()> {
         let path = path.canonicalize()?;
-        let mut images = FoximgFolder::new(self, &path).load()?;
+        let iter = self.get_path_iter(&path)?;
+        let mut images = FoximgFolder::new(self, &path).load(iter)?;
 
         images.update_window(
             &mut self.rl,

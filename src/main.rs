@@ -395,6 +395,7 @@ struct Foximg {
     camera: Camera2D,
 
     // title_override: Option<String>,
+    lock: Option<FoximgLock>,
     title_format: String,
     scaleto: bool,
 
@@ -405,6 +406,7 @@ struct Foximg {
 
 impl Foximg {
     pub fn init(
+        lock: Option<FoximgLock>,
         verbose: bool, 
         override_state: Option<FoximgState>, 
         override_style: Option<FoximgStyle>,
@@ -485,6 +487,7 @@ impl Foximg {
             settings,
             style,
             resources,
+            lock,
             title_format,
             scaleto,
             rl,
@@ -565,17 +568,19 @@ impl Foximg {
         while !self.rl.window_should_close() {
             self.update();
             self.btn_bounds = FoximgBtnsBounds::new(&self.rl, self.mouse_pos);
-            self.get_dropped_img();
-            self.update_mouse_cursor();
-            self.manipulate_img();
-
-            if self
-                .rl
-                .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
-            {
-                let keep_running = FoximgMenu::init(&mut self).run();
-                if !keep_running {
-                    return;
+            if let None | Some(FoximgLock::Images) = self.lock {
+                self.get_dropped_img();
+                self.update_mouse_cursor();
+                self.manipulate_img();
+    
+                if self
+                    .rl
+                    .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
+                {
+                    let keep_running = FoximgMenu::init(&mut self).run();
+                    if !keep_running {
+                        return;
+                    }
                 }
             }
 
@@ -683,9 +688,15 @@ enum FoximgMode {
     Normal,
 }
 
+enum FoximgLock {
+    Images,
+    Ui,
+}
+
 struct FoximgArgs<'a> {
     mode: FoximgMode,
 
+    lock: Option<FoximgLock>,
     scaleto: bool,
     state: Option<FoximgState>,
     style: Option<FoximgStyle>,
@@ -698,6 +709,7 @@ impl<'a> FoximgArgs<'a> {
     pub fn new() -> Self {
         Self {
             mode: FoximgMode::Normal,
+            lock: None,
             scaleto: false,
             state: None,
             style: None,
@@ -707,9 +719,19 @@ impl<'a> FoximgArgs<'a> {
         }
     }
 
+    fn set_lock(&mut self) {
+        if self.lock.is_none() {
+            self.lock = Some(FoximgLock::Images);
+        } else {
+            self.lock = Some(FoximgLock::Ui);
+        }
+    }
+
     fn parse_long_option(&mut self, arg: &'a str) -> Result<(), Option<anyhow::Error>> {
         if arg == "--help" {
             return Err(None);
+        } else if arg == "--lock" {
+            self.set_lock();
         } else if arg == "--quiet" {
             foximg_log::quiet(true);
         } else if arg == "--scaleto" {
@@ -741,6 +763,8 @@ impl<'a> FoximgArgs<'a> {
         for c in arg {
             if c == 'h' {
                 return Err(None);
+            } else if c == 'l' {
+                self.set_lock();
             } else if c == 'q' {
                 foximg_log::quiet(true);
             } else if c == 's' {
@@ -899,6 +923,7 @@ fn help(e: Option<anyhow::Error>) -> io::Result<()> {
     writeln!(out, "    foximg {gray_color}[OPTION...] [PATH]{reset_color}")?;
     writeln!(out, "{green_color}Options:{reset_color}")?;
     writeln!(out, "    {gray_color}-h, --help          {reset_color}Print help")?;
+    writeln!(out, "    {gray_color}-l, --lock          {reset_color}Show only the input image. Use -ll to lock the UI as well")?;
     writeln!(out, "    {gray_color}-q, --quiet         {reset_color}Don't print log messages")?;
     writeln!(out, "    {gray_color}-s, --scaleto       {reset_color}Scale window to the size of the current image")?;
     writeln!(out, "    {gray_color}    --state=TOML    {reset_color}Set window's state according to the format in foximg_state.toml")?;
@@ -922,11 +947,19 @@ fn help(e: Option<anyhow::Error>) -> io::Result<()> {
 
 fn run(args: FoximgArgs) {
     foximg_log::out(FoximgLogOut::Stdout(std::io::stdout()));
+
+    let default_format = if args.lock.is_none() {
+        "foximg %v%! [%u of %l] - %f"
+    } else {
+        "foximg %v%! - %f"
+    };
+
     let foximg = Foximg::init(
+        args.lock,
         args.verbose, 
         args.state,
         args.style,
-        args.title.unwrap_or("foximg %v%! [%u of %l] - %f").to_string(), 
+        args.title.unwrap_or(default_format).to_string(), 
         args.scaleto
     );
     
