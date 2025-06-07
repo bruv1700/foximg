@@ -429,9 +429,8 @@ impl<'a> FoximgMenu<'a> {
             FoximgDraw::begin(self.f, |mut d, images| {
                 if let Some(images) = images {
                     d.draw_current_img(images);
-                } else {
-                    d.draw_large_centered_text("drag + drop an image");
                 }
+                
                 d.draw_menus(&self.menus, &self.rects, self.hovering_on, self.showing);
             });
         }

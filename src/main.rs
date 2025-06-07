@@ -377,7 +377,12 @@ impl<'a> FoximgDraw<'a> {
             btn_bounds: foximg.btn_bounds,
             scaleto: foximg.scaleto,
         };
+
         d.d.clear_background(foximg.style.bg);
+        if let (None | Some(FoximgLock::Images), None) = (foximg.lock, &foximg.images) {
+            d.draw_large_centered_text("drag + drop an image");
+        }
+
         f(d, foximg.images.as_mut());
     }
 }
@@ -588,8 +593,6 @@ impl Foximg {
                 if let Some(images) = images {
                     d.draw_current_img(images);
                     d.draw_btns(images);
-                } else {
-                    d.draw_large_centered_text("drag + drop an image");
                 }
             });
         }
@@ -688,6 +691,7 @@ enum FoximgMode {
     Normal,
 }
 
+#[derive(Clone, Copy)]
 enum FoximgLock {
     Images,
     Ui,
