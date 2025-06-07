@@ -247,6 +247,19 @@ impl<'a, 'b> FoximgUpdateSubMenu<'a, 'b> {
 }
 
 impl FoximgDraw<'_> {
+    fn draw_menu_shadow(&mut self, menu: &'static [MenuBtn], x: f32, y: f32) {
+        let shadow_x = x + MenuBtn::HEIGHT / 8.;
+        let shadow_y = y + MenuBtn::HEIGHT / 8.;
+
+        self.d.draw_rectangle(
+            shadow_x as i32,
+            shadow_y as i32,
+            MenuBtn::WIDTH as i32,
+            MenuBtn::HEIGHT as i32 * menu.len() as i32,
+            self.style.bg.alpha(0.5),
+        );
+    }
+
     fn draw_menu(&mut self, menu: &'static [MenuBtn], x: f32, mut y: f32) {
         for btn in menu {
             self.d
@@ -302,23 +315,24 @@ impl FoximgDraw<'_> {
         }
     }
 
-    fn draw_menus(
+    fn draw_menu_objects(
         &mut self,
         menus: &[&'static [MenuBtn]],
         rects: &[Rectangle],
         hovering_on: (usize, usize),
         showing: (usize, usize),
+        draw: fn(&mut Self, menu: &'static [MenuBtn], x: f32, y: f32),
     ) {
         let col = showing.0;
         let row = showing.1;
         let showing = &menus[col][row];
 
         if let MenuBtnType::SubMenu(sub_menu) = showing.btn_type {
-            self.draw_menu(sub_menu, rects[col + 1].x, rects[col + 1].y);
+            draw(self, sub_menu, rects[col + 1].x, rects[col + 1].y);
         }
 
         for i in 0..=hovering_on.0 {
-            self.draw_menu(menus[i], rects[i].x, rects[i].y);
+            draw(self, menus[i], rects[i].x, rects[i].y);
         }
     }
 }
@@ -430,8 +444,22 @@ impl<'a> FoximgMenu<'a> {
                 if let Some(images) = images {
                     d.draw_current_img(images);
                 }
-                
-                d.draw_menus(&self.menus, &self.rects, self.hovering_on, self.showing);
+
+                d.draw_menu_objects(
+                    &self.menus,
+                    &self.rects,
+                    self.hovering_on,
+                    self.showing,
+                    FoximgDraw::draw_menu_shadow,
+                );
+
+                d.draw_menu_objects(
+                    &self.menus,
+                    &self.rects,
+                    self.hovering_on,
+                    self.showing,
+                    FoximgDraw::draw_menu,
+                );
             });
         }
 
