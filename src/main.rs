@@ -805,9 +805,9 @@ impl<'a> FoximgArgs<'a> {
         }
 
         match self.mode {
-            FoximgMode::Help(e) => Box::new(|| self::help(e).unwrap()),
-            FoximgMode::Version => Box::new(|| println!("{}", env!("CARGO_PKG_VERSION"))),
+            FoximgMode::Help(e) => Box::new(|| self::help(e)),
             FoximgMode::Normal => Box::new(|| self::run(self)),
+            FoximgMode::Version => Box::new(self::version),
         }
     }
 }
@@ -892,7 +892,20 @@ fn set_vt() -> windows::core::Result<()> {
     Ok(())
 }
 
-fn help(e: Option<anyhow::Error>) -> io::Result<()> {
+fn stdout_error(what: &str, e: io::Error) {
+    const ERROR_COLOR: &str = "\x1b[1m\x1b[38;5;202m";
+    const RESET_COLOR: &str = "\x1b[0m";
+
+    eprintln!("{ERROR_COLOR}ERROR: {RESET_COLOR}Printing {what} to stdout failed: {e}");
+}
+
+fn help(e: Option<anyhow::Error>) {
+    if let Err(e) = self::try_help(e) {
+        self::stdout_error("help", e);
+    }
+}
+
+fn try_help(e: Option<anyhow::Error>) -> io::Result<()> {
     const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
     const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
 
@@ -967,4 +980,11 @@ fn run(args: FoximgArgs) {
         TraceLogLevel::LOG_INFO,
         "FOXIMG: Foximg uninitialized successfully. Goodbye!",
     );
+}
+
+fn version() {
+    let out = std::io::stdout();
+    if let Err(e) = writeln!(&out, "{}", env!("CARGO_PKG_VERSION")) {
+        self::stdout_error("version", e);
+    }
 }
