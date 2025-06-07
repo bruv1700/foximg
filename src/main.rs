@@ -238,6 +238,7 @@ struct FoximgDraw<'a> {
     resources: &'a FoximgResources,
     mouse_wheel: &'a mut f32,
     camera: &'a mut Camera2D,
+    title: &'a str,
     rl_thread: &'a RaylibThread,
     btn_bounds: FoximgBtnsBounds,
     scaleto: bool,
@@ -312,16 +313,8 @@ impl<'a> FoximgDraw<'a> {
 
             self.d.draw_text_ex(
                 &self.resources.yudit, 
-                &images.img_path().to_string_lossy(), 
+                self.title, 
                 rvec2(10, 10), 
-                FONT_SIZE, 
-                FONT_SPACING, 
-                self.style.accent
-            );
-            self.d.draw_text_ex(
-                &self.resources.yudit, 
-                &images.img_current_string(), 
-                rvec2(10, 10. + FONT_SIZE), 
                 FONT_SIZE, 
                 FONT_SPACING, 
                 self.style.accent
@@ -363,7 +356,7 @@ impl<'a> FoximgDraw<'a> {
 
     pub fn begin(
         foximg: &'a mut Foximg,
-        f: impl FnOnce(FoximgDraw<'a>, Option<&'a mut FoximgImages>),
+        f: impl FnOnce(FoximgDraw<'a>, Option<&'a mut Box<FoximgImages>>),
     ) {
         let d = foximg.rl.begin_drawing(&foximg.rl_thread);
         let mut d = Self {
@@ -373,6 +366,7 @@ impl<'a> FoximgDraw<'a> {
             resources: &foximg.resources,
             mouse_wheel: &mut foximg.mouse_wheel,
             camera: &mut foximg.camera,
+            title: &foximg.title,
             rl_thread: &foximg.rl_thread,
             btn_bounds: foximg.btn_bounds,
             scaleto: foximg.scaleto,
@@ -387,21 +381,21 @@ impl<'a> FoximgDraw<'a> {
     }
 }
 
-struct Foximg {
+pub struct Foximg {
     style: FoximgStyle,
     state: FoximgState,
     settings: FoximgSettings,
     resources: FoximgResources,
-    images: Option<FoximgImages>,
+    images: Option<Box<FoximgImages>>,
 
     mouse_pos: Vector2,
     btn_bounds: FoximgBtnsBounds,
     mouse_wheel: f32,
     camera: Camera2D,
 
-    // title_override: Option<String>,
     lock: Option<FoximgLock>,
     title_format: String,
+    title: String,
     scaleto: bool,
 
     rl: RaylibHandle,
@@ -494,6 +488,7 @@ impl Foximg {
             resources,
             lock,
             title_format,
+            title,
             scaleto,
             rl,
             rl_thread,
@@ -692,7 +687,7 @@ enum FoximgMode {
 }
 
 #[derive(Clone, Copy)]
-enum FoximgLock {
+pub enum FoximgLock {
     Images,
     Ui,
 }
@@ -953,9 +948,9 @@ fn run(args: FoximgArgs) {
     foximg_log::out(FoximgLogOut::Stdout(std::io::stdout()));
 
     let default_format = if args.lock.is_none() {
-        "foximg %v%! [%u of %l] - %f"
+        "foximg %v%! \n[%u of %l] - %f"
     } else {
-        "foximg %v%! - %f"
+        "foximg %v%! \n- %f"
     };
 
     let foximg = Foximg::init(

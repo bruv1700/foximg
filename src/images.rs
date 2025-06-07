@@ -354,53 +354,35 @@ impl FoximgImages {
         format!("[{} of {}]", self.img_current(), self.len())
     }
 
-    pub fn update_window(
-        &mut self,
-        rl: &mut RaylibHandle,
-        rl_thread: &RaylibThread,
-        title_format: &str,
-        scaleto: bool,
-    ) {
-        let title = crate::format_title(rl, rl_thread, title_format, Some(self));
-        rl.set_window_title(rl_thread, &title);
-        rl.trace_log(
+    pub fn update_window(&mut self, f: &mut Foximg) {
+        f.title = crate::format_title(&mut f.rl, &f.rl_thread, &f.title_format, Some(self));
+        f.rl.set_window_title(&f.rl_thread, &f.title.replace('\n', ""));
+        f.rl.trace_log(
             TraceLogLevel::LOG_INFO,
             &format!("FOXIMG: {:?} opened", self.img_path()),
         );
 
-        if scaleto {
-            let Some(img) = self.img_get(rl, rl_thread) else {
+        if f.scaleto {
+            let Some(img) = self.img_get(&mut f.rl, &f.rl_thread) else {
                 return;
             };
 
             let img = img.borrow();
-            rl.set_window_size(img.width(), img.height());
+            f.rl.set_window_size(img.width(), img.height());
         }
     }
 
-    pub fn inc(
-        &mut self,
-        rl: &mut RaylibHandle,
-        rl_thread: &RaylibThread,
-        title_format: &str,
-        scaleto: bool,
-    ) {
+    pub fn inc(&mut self, f: &mut Foximg) {
         if self.can_inc() {
             self.current += 1;
-            self.update_window(rl, rl_thread, title_format, scaleto);
+            self.update_window(f);
         }
     }
 
-    pub fn dec(
-        &mut self,
-        rl: &mut RaylibHandle,
-        rl_thread: &RaylibThread,
-        title_format: &str,
-        scaleto: bool,
-    ) {
+    pub fn dec(&mut self, f: &mut Foximg) {
         if self.can_dec() {
             self.current -= 1;
-            self.update_window(rl, rl_thread, title_format, scaleto);
+            self.update_window(f);
         }
     }
 
@@ -476,7 +458,7 @@ impl<'a> FoximgFolder<'a> {
         }
     }
 
-    fn skip_reread(&mut self) -> Option<FoximgImages> {
+    fn skip_reread(&mut self) -> Option<Box<FoximgImages>> {
         if let Some(ref mut images) = self.f.images {
             if self.folder.is_some()
                 && images.paths.first().and_then(|path| path.parent()) == self.folder
@@ -585,7 +567,7 @@ impl<'a> FoximgFolder<'a> {
     /// - `path` doesn't lie inside a directory
     /// - An IO error
     /// - The folder doesn't have any valid images.
-    pub fn load(mut self, iter: FoximgFolderIter) -> anyhow::Result<FoximgImages> {
+    pub fn load(mut self, iter: FoximgFolderIter) -> anyhow::Result<Box<FoximgImages>> {
         if let Some(images) = self.skip_reread() {
             return Ok(images);
         }
@@ -605,7 +587,7 @@ impl<'a> FoximgFolder<'a> {
                     self.folder.unwrap_or(Path::new(""))
                 ),
             );
-            Ok(images)
+            Ok(Box::new(images))
         } else {
             Err(anyhow::anyhow!("No images could be loaded from the folder"))
         }
@@ -657,12 +639,7 @@ impl Foximg {
         let iter = self.get_path_iter(&path)?;
         let mut images = FoximgFolder::new(self, &path).load(iter)?;
 
-        images.update_window(
-            &mut self.rl,
-            &self.rl_thread,
-            &self.title_format,
-            self.scaleto,
-        );
+        images.update_window(self);
         self.images = Some(images);
         Ok(())
     }

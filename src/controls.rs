@@ -162,7 +162,11 @@ impl Foximg {
     /// Updates the current image on the gallery. Goes to the next one if D is pressed, and goes to
     /// the previous one if A is pressed. Returns true if so.
     pub fn update_gallery(&mut self) -> bool {
-        if let Some(ref mut images) = self.images {
+        let mut res = false;
+        let mut local_images = None;
+
+        std::mem::swap(&mut local_images, &mut self.images);
+        if let Some(ref mut images) = local_images {
             if images.can_dec()
                 && (self
                     .rl
@@ -170,13 +174,8 @@ impl Foximg {
                     && self.btn_bounds.mouse_on_left_btn())
                 || self.rl.is_key_pressed(KeyboardKey::KEY_A)
             {
-                images.dec(
-                    &mut self.rl,
-                    &self.rl_thread,
-                    &self.title_format,
-                    self.scaleto,
-                );
-                return true;
+                images.dec(self);
+                res = true;
             } else if images.can_inc()
                 && (self
                     .rl
@@ -184,16 +183,13 @@ impl Foximg {
                     && self.btn_bounds.mouse_on_right_btn())
                 || self.rl.is_key_pressed(KeyboardKey::KEY_D)
             {
-                images.inc(
-                    &mut self.rl,
-                    &self.rl_thread,
-                    &self.title_format,
-                    self.scaleto,
-                );
-                return true;
+                images.inc(self);
+                res = true;
             }
         }
-        false
+
+        std::mem::swap(&mut local_images, &mut self.images);
+        res
     }
 
     /// Zooms in or out according to the scroll wheel.
