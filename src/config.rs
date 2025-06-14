@@ -327,6 +327,7 @@ pub struct FoximgStyle {
     pub dark: bool,
     pub accent: FoximgColor,
     pub bg: FoximgColor,
+    pub command: FoximgColor,
 }
 
 impl FoximgStyle {
@@ -565,6 +566,7 @@ impl Default for FoximgStyle {
             dark: true,
             accent: FoximgColor(Color::new(245, 213, 246, 127)),
             bg: FoximgColor(Color::new(34, 12, 35, 255)),
+            command: FoximgColor(Color::YELLOW),
             optionals: FoximgStyleOptionals::default(),
         }
     }

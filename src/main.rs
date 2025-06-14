@@ -12,6 +12,8 @@ use menu::FoximgMenu;
 use raylib::prelude::*;
 use resources::FoximgResources;
 
+use crate::images::FoximgImage;
+
 mod config;
 mod controls;
 mod foximg_log;
@@ -238,6 +240,7 @@ struct FoximgDraw<'a> {
     resources: &'a FoximgResources,
     mouse_wheel: &'a mut f32,
     camera: &'a mut Camera2D,
+    skip_count: &'a str,
     title: &'a str,
     rl_thread: &'a RaylibThread,
     btn_bounds: FoximgBtnsBounds,
@@ -264,6 +267,46 @@ impl<'a> FoximgDraw<'a> {
             FONT_SIZE,
             FONT_SPACING,
             self.style.accent,
+        );
+    }
+
+    fn draw_fullscreen_title(&mut self) {
+        const FONT_SIZE: f32 = 16.;
+        const FONT_SPACING: f32 = resources::yudit_spacing(FONT_SIZE);
+
+        if !self.state.fullscreen {
+            return;
+        }
+
+        self.d.draw_text_ex(
+            &self.resources.yudit, 
+            self.title, 
+            rvec2(10, 10), 
+            FONT_SIZE, 
+            FONT_SPACING, 
+            self.style.accent
+        );
+    }
+
+    fn draw_skip_count(&mut self, img: &FoximgImage, screen_width: f32, screen_height: f32) {
+        let yudit = &self.resources.yudit;
+        let mut rotation_text_right_offset = 0.;
+
+        if img.rotation() != 0. {
+            rotation_text_right_offset = yudit.measure_text("OOO", resources::SYMBOL_SIDE, 1.).x;
+        }
+
+        let text_width = yudit.measure_text(self.skip_count, resources::SYMBOL_SIDE, 1.).x;
+        self.d.draw_text_ex(
+            yudit,
+            self.skip_count,
+            rvec2(
+                screen_width - text_width - rotation_text_right_offset - (resources::SYMBOL_PADDING * 2.) + resources::TEXT_RIGHT_OFFSET,
+                screen_height - resources::SYMBOL_SIDE as f32 - resources::FLIP_OFFSET,
+            ),
+            resources::SYMBOL_SIDE as f32,
+            1.,
+            self.style.command,
         );
     }
 
@@ -307,19 +350,8 @@ impl<'a> FoximgDraw<'a> {
             screen_height,
         );
 
-        if self.state.fullscreen {
-            const FONT_SIZE: f32 = 16.;
-            const FONT_SPACING: f32 = resources::yudit_spacing(FONT_SIZE);
-
-            self.d.draw_text_ex(
-                &self.resources.yudit, 
-                self.title, 
-                rvec2(10, 10), 
-                FONT_SIZE, 
-                FONT_SPACING, 
-                self.style.accent
-            );
-        }
+        self.draw_fullscreen_title();
+        self.draw_skip_count(&img, screen_width, screen_height);
     }
 
     fn draw_btns(&mut self, images: &mut FoximgImages) {
@@ -366,6 +398,7 @@ impl<'a> FoximgDraw<'a> {
             resources: &foximg.resources,
             mouse_wheel: &mut foximg.mouse_wheel,
             camera: &mut foximg.camera,
+            skip_count: &foximg.skip_count,
             title: &foximg.title,
             rl_thread: &foximg.rl_thread,
             btn_bounds: foximg.btn_bounds,
@@ -392,6 +425,7 @@ pub struct Foximg {
     btn_bounds: FoximgBtnsBounds,
     mouse_wheel: f32,
     camera: Camera2D,
+    skip_count: String,
 
     lock: Option<FoximgLock>,
     title_format: String,
@@ -482,6 +516,7 @@ impl Foximg {
                 zoom: 1.,
                 ..Default::default()
             },
+            skip_count: String::new(),
             state,
             settings,
             style,
@@ -549,6 +584,12 @@ impl Foximg {
             Foximg::rotate_n90_img,
             Foximg::rotate_90_img,
             Foximg::update_gallery,
+            Foximg::jump_to,
+            Foximg::delete_skip,
+            Foximg::escape_skip,
+            Foximg::jump_to_end,
+            Foximg::skip_images,
+            Foximg::jump_to_start,
         ];
 
         POLL_IMG_EVENTS.iter().find(|event| event(self));
@@ -591,6 +632,27 @@ impl Foximg {
                 }
             });
         }
+    }
+
+    /// Do something mutably with the current images. Calls the closure only if theres images loaded.
+    /// Use this only if you don't care about handling what happens when theres no images loaded, and
+    /// when otherwise using regular `if let Some(ref mut images) = f {...}` syntax would cause borrow
+    /// checker issues: 
+    /// 
+    /// The function temporarily takes ownership of the `Box<FoximgImages>` and then returns it to 
+    /// `self`. Thus, inside the closure, `f.images` will always be `None`.
+    pub fn images_with<F>(&mut self, f: F) 
+    where 
+        F: FnOnce(&mut Self, &mut FoximgImages) 
+    {
+        let mut local_images = None;
+        std::mem::swap(&mut local_images, &mut self.images);
+
+        if let Some(ref mut images) = local_images {
+            f(self, images)
+        }
+
+        std::mem::swap(&mut local_images, &mut self.images);
     }
 }
 

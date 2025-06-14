@@ -13,7 +13,11 @@ use foximg_image_loader::FoximgImageLoader;
 use image::{EncodableLayout, Frame, Frames, ImageResult, foximg::AnimationLoops};
 use raylib::prelude::*;
 
-use crate::{Foximg, config::FoximgStyle, resources::FoximgResources};
+use crate::{
+    Foximg,
+    config::FoximgStyle,
+    resources::{self, FoximgResources},
+};
 
 mod foximg_image_loader;
 
@@ -148,6 +152,10 @@ impl FoximgImage {
         self.texture.height()
     }
 
+    pub fn rotation(&self) -> f32 {
+        self.rotation
+    }
+
     pub fn draw_center_scaled(
         &self,
         d: &mut RaylibDrawHandle,
@@ -192,9 +200,6 @@ impl FoximgImage {
         screen_width: f32,
         screen_height: f32,
     ) {
-        const SYMBOL_SIDE: i32 = 64;
-        const SYMBOL_PADDING: i32 = 10;
-
         let flipped_horizontal = self.width_mult == -1;
         let flipped_vertical = self.height_mult == -1;
         let flip = &resources.flip;
@@ -203,7 +208,10 @@ impl FoximgImage {
         if flipped_horizontal {
             d.draw_texture_ex(
                 flip,
-                rvec2(SYMBOL_PADDING, screen_height - SYMBOL_PADDING as f32),
+                rvec2(
+                    resources::SYMBOL_PADDING,
+                    screen_height - resources::SYMBOL_PADDING,
+                ),
                 -90.,
                 1.,
                 accent,
@@ -213,33 +221,29 @@ impl FoximgImage {
             d.draw_texture(
                 flip,
                 if flipped_horizontal {
-                    SYMBOL_PADDING * 2 + SYMBOL_SIDE
+                    resources::SYMBOL_PADDING * 2. + resources::SYMBOL_SIDE
                 } else {
-                    SYMBOL_PADDING
-                },
-                screen_height as i32 - SYMBOL_SIDE - SYMBOL_PADDING,
+                    resources::SYMBOL_PADDING
+                } as i32,
+                (screen_height - resources::SYMBOL_SIDE - resources::SYMBOL_PADDING) as i32,
                 accent,
             );
         }
 
-        /// The width of the whitespace pixels on the right side of the yudit 0.
-        const TEXT_RIGHT_OFFSET: f32 = 9.;
-        /// The width of the whitespace pixels around each side of the flip texture.
-        const FLIP_OFFSET: f32 = 2.;
-
         if self.rotation != 0. {
             let text = self.rotation.to_string();
             let yudit = &resources.yudit;
-            let text_width = yudit.measure_text(&text, SYMBOL_SIDE as f32, 1.).x;
+            let text_width = yudit.measure_text(&text, resources::SYMBOL_SIDE, 1.).x;
 
             d.draw_text_ex(
                 yudit,
                 &text,
                 rvec2(
-                    screen_width - text_width - (SYMBOL_PADDING * 2) as f32 + TEXT_RIGHT_OFFSET,
-                    screen_height - SYMBOL_SIDE as f32 - FLIP_OFFSET,
+                    screen_width - text_width - resources::SYMBOL_PADDING * 2.
+                        + resources::TEXT_RIGHT_OFFSET,
+                    screen_height - resources::SYMBOL_SIDE - resources::FLIP_OFFSET,
                 ),
-                SYMBOL_SIDE as f32,
+                resources::SYMBOL_SIDE,
                 1.,
                 accent,
             );
@@ -354,6 +358,10 @@ impl FoximgImages {
         format!("[{} of {}]", self.img_current(), self.len())
     }
 
+    pub fn set_current(&mut self, c: usize) {
+        self.current = c;
+    }
+
     pub fn update_window(&mut self, f: &mut Foximg) {
         f.title = crate::format_title(&mut f.rl, &f.rl_thread, &f.title_format, Some(self));
         f.rl.set_window_title(&f.rl_thread, &f.title.replace('\n', ""));
@@ -372,16 +380,17 @@ impl FoximgImages {
         }
     }
 
-    pub fn inc(&mut self, f: &mut Foximg) {
+    pub fn inc(&mut self, f: &mut Foximg, amount: usize) {
         if self.can_inc() {
-            self.current += 1;
+            self.current += amount;
+            self.current = self.current.clamp(0, self.len() - 1);
             self.update_window(f);
         }
     }
 
-    pub fn dec(&mut self, f: &mut Foximg) {
+    pub fn dec(&mut self, f: &mut Foximg, amount: usize) {
         if self.can_dec() {
-            self.current -= 1;
+            self.current = self.current.saturating_sub(amount);
             self.update_window(f);
         }
     }

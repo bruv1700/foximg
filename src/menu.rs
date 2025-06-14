@@ -81,7 +81,7 @@ impl MenuBtn {
 }
 
 /// The index at which the foximg right-click menu must be shown from when no image gallery is loaded.
-const FOXIMG_MENU_NO_IMAGES: usize = 2;
+const FOXIMG_MENU_NO_IMAGES: usize = 3;
 
 static FOXIMG_MENU: &[MenuBtn] = {
     const EXIT_SHORTCUT: &str = if cfg!(target_os = "windows") {
@@ -104,6 +104,19 @@ static FOXIMG_MENU: &[MenuBtn] = {
             "Shift+Q",
         ),
         MenuBtn::new_shortcut("Vertical", MenuBtnType::OnPressed(btn_vertical), "Shift+E"),
+    ];
+
+    static FOXIMG_MENU_NAVIGATE: &[MenuBtn] = &[
+        MenuBtn::new_shortcut(
+            "First Image",
+            MenuBtnType::OnPressedExit(btn_first_img),
+            "0",
+        ),
+        MenuBtn::new_shortcut(
+            "Last Image",
+            MenuBtnType::OnPressedExit(btn_last_img),
+            "Shift+4",
+        ),
     ];
 
     fn btn_open(fm: &mut FoximgMenu<'_>) -> bool {
@@ -168,9 +181,28 @@ static FOXIMG_MENU: &[MenuBtn] = {
         }
     }
 
+    fn btn_first_img(fm: &mut FoximgMenu<'_>) -> bool {
+        fm.f.images_with(|f, images| {
+            images.set_current(0);
+            images.update_window(f);
+        });
+
+        true
+    }
+
+    fn btn_last_img(fm: &mut FoximgMenu<'_>) -> bool {
+        fm.f.images_with(|f, images| {
+            images.set_current(images.len() - 1);
+            images.update_window(f);
+        });
+
+        true
+    }
+
     &[
         MenuBtn::new("Rotate", MenuBtnType::SubMenu(FOXIMG_MENU_ROTATE)),
         MenuBtn::new("Mirror", MenuBtnType::SubMenu(FOXIMG_MENU_MIRROR)),
+        MenuBtn::new("Navigate", MenuBtnType::SubMenu(FOXIMG_MENU_NAVIGATE)),
         MenuBtn::new("Open...", MenuBtnType::OnPressedExit(btn_open)),
         MenuBtn::new_shortcut(
             "Toggle Fullscreen",

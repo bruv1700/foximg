@@ -159,36 +159,43 @@ impl Foximg {
         false
     }
 
+    fn skip_count_to_usize(&mut self) -> usize {
+        self.skip_count
+            .parse()
+            .inspect(|_| self.skip_count.clear())
+            .unwrap()
+    }
+
     /// Updates the current image on the gallery. Goes to the next one if D is pressed, and goes to
     /// the previous one if A is pressed. Returns true if so.
     pub fn update_gallery(&mut self) -> bool {
         let mut res = false;
-        let mut local_images = None;
+        self.images_with(|f, images| {
+            let pressed_a = f.rl.is_key_pressed(KeyboardKey::KEY_A);
+            let pressed_d = f.rl.is_key_pressed(KeyboardKey::KEY_D);
+            let amount = if !f.skip_count.is_empty() && (pressed_a || pressed_d) {
+                f.skip_count_to_usize()
+            } else {
+                1
+            };
 
-        std::mem::swap(&mut local_images, &mut self.images);
-        if let Some(ref mut images) = local_images {
             if images.can_dec()
-                && (self
-                    .rl
-                    .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
-                    && self.btn_bounds.mouse_on_left_btn())
-                || self.rl.is_key_pressed(KeyboardKey::KEY_A)
+                && (f.rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+                    && f.btn_bounds.mouse_on_left_btn())
+                || pressed_a
             {
-                images.dec(self);
+                images.dec(f, amount);
                 res = true;
             } else if images.can_inc()
-                && (self
-                    .rl
-                    .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
-                    && self.btn_bounds.mouse_on_right_btn())
-                || self.rl.is_key_pressed(KeyboardKey::KEY_D)
+                && (f.rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+                    && f.btn_bounds.mouse_on_right_btn())
+                || pressed_d
             {
-                images.inc(self);
+                images.inc(f, amount);
                 res = true;
             }
-        }
+        });
 
-        std::mem::swap(&mut local_images, &mut self.images);
         res
     }
 
@@ -248,5 +255,84 @@ impl Foximg {
         self.pan_img_direction(KeyboardKey::KEY_L, KeyboardKey::KEY_RIGHT, |f, d| {
             f.camera.target.x += d
         });
+    }
+
+    pub fn jump_to(&mut self) -> bool {
+        let mut res = false;
+        self.images_with(|f, images| {
+            if !f.skip_count.is_empty() && f.rl.is_key_pressed(KeyboardKey::KEY_G) {
+                let goto = f.skip_count_to_usize().clamp(1, images.len()) - 1;
+
+                images.set_current(goto);
+                images.update_window(f);
+                res = true;
+            }
+        });
+
+        res
+    }
+
+    pub fn jump_to_end(&mut self) -> bool {
+        let mut res = false;
+        self.images_with(|f, images| {
+            if f.is_shift_down() && f.rl.is_key_pressed(KeyboardKey::KEY_FOUR) {
+                images.set_current(images.len() - 1);
+                images.update_window(f);
+                res = true;
+            }
+        });
+
+        res
+    }
+
+    pub fn delete_skip(&mut self) -> bool {
+        if !self.skip_count.is_empty() && self.rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE) {
+            self.skip_count.pop();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn escape_skip(&mut self) -> bool {
+        if !self.skip_count.is_empty() && self.rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            self.skip_count.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn skip_images(&mut self) -> bool {
+        if self.images.is_none() {
+            return false;
+        }
+
+        let Some(key) = self.rl.get_key_pressed() else {
+            return false;
+        };
+
+        if key as u32 >= KeyboardKey::KEY_ONE as u32 && key as u32 <= KeyboardKey::KEY_NINE as u32 {
+            self.skip_count.push(key as u32 as u8 as char);
+            true
+        } else if self.rl.is_key_pressed(KeyboardKey::KEY_ZERO) && !self.skip_count.is_empty() {
+            self.skip_count.push('0');
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn jump_to_start(&mut self) -> bool {
+        let mut res = false;
+        self.images_with(|f, images| {
+            if f.rl.is_key_pressed(KeyboardKey::KEY_ZERO) {
+                images.set_current(0);
+                images.update_window(f);
+                res = true;
+            }
+        });
+
+        res
     }
 }
