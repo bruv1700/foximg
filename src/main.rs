@@ -14,6 +14,7 @@ use resources::FoximgResources;
 
 use crate::images::FoximgImage;
 
+mod cli;
 mod config;
 mod controls;
 mod foximg_log;
@@ -742,8 +743,15 @@ pub fn format_title(
         .concat()
 }
 
+#[derive(Clone, Copy)]
+enum FoximgInfoLanguage {
+    Toml,
+    Json,
+}
+
 enum FoximgMode {
     Help(Option<anyhow::Error>),
+    Info(FoximgInfoLanguage),
     Version,
     Normal,
 }
@@ -758,6 +766,7 @@ struct FoximgArgs<'a> {
     mode: FoximgMode,
 
     lock: Option<FoximgLock>,
+    quiet: bool,
     scaleto: bool,
     state: Option<FoximgState>,
     style: Option<FoximgStyle>,
@@ -771,6 +780,7 @@ impl<'a> FoximgArgs<'a> {
         Self {
             mode: FoximgMode::Normal,
             lock: None,
+            quiet: false,
             scaleto: false,
             state: None,
             style: None,
@@ -791,10 +801,14 @@ impl<'a> FoximgArgs<'a> {
     fn parse_long_option(&mut self, arg: &'a str) -> Result<(), Option<anyhow::Error>> {
         if arg == "--help" {
             return Err(None);
+        } else if arg == "--info" {
+            self.mode = FoximgMode::Info(FoximgInfoLanguage::Toml);
+        } else if arg == "--json" {
+            self.mode = FoximgMode::Info(FoximgInfoLanguage::Json);
         } else if arg == "--lock" {
             self.set_lock();
         } else if arg == "--quiet" {
-            foximg_log::quiet(true);
+            self.quiet = true;
         } else if arg == "--scaleto" {
             self.scaleto = true;
         } else if let Some(state) = arg.strip_prefix("--state") {
@@ -824,10 +838,12 @@ impl<'a> FoximgArgs<'a> {
         for c in arg {
             if c == 'h' {
                 return Err(None);
+            } else if c == 'i' {
+                self.mode = FoximgMode::Info(FoximgInfoLanguage::Toml);
             } else if c == 'l' {
                 self.set_lock();
             } else if c == 'q' {
-                foximg_log::quiet(true);
+                self.quiet = true;
             } else if c == 's' {
                 self.scaleto = true;
             } else if c == 'v' {
@@ -868,6 +884,7 @@ impl<'a> FoximgArgs<'a> {
 
         match self.mode {
             FoximgMode::Help(e) => Box::new(|| self::help(e)),
+            FoximgMode::Info(language) => Box::new(move || cli::run(self, language)),
             FoximgMode::Normal => Box::new(|| self::run(self)),
             FoximgMode::Version => Box::new(self::version),
         }
@@ -997,8 +1014,10 @@ fn try_help(e: Option<anyhow::Error>) -> io::Result<()> {
     writeln!(out, "    foximg {gray_color}[OPTION...] [PATH]{reset_color}")?;
     writeln!(out, "{green_color}Options:{reset_color}")?;
     writeln!(out, "    {gray_color}-h, --help          {reset_color}Print help")?;
+    writeln!(out, "    {gray_color}-i, --info          {reset_color}Print info about input image as TOML")?;
+    writeln!(out, "    {gray_color}    --json          {reset_color}Print info about input image as JSON")?;
     writeln!(out, "    {gray_color}-l, --lock          {reset_color}Show only the input image. Use -ll to lock the UI as well")?;
-    writeln!(out, "    {gray_color}-q, --quiet         {reset_color}Don't print log messages")?;
+    writeln!(out, "    {gray_color}-q, --quiet         {reset_color}Don't print log messages. Don't print EXIF metadata with -i")?;
     writeln!(out, "    {gray_color}-s, --scaleto       {reset_color}Scale window to the size of the current image")?;
     writeln!(out, "    {gray_color}    --state=TOML    {reset_color}Set window's state according to the format in foximg_state.toml")?;
     writeln!(out, "    {gray_color}    --style=TOML    {reset_color}Set window's style according to the format in foximg_style.toml")?;
@@ -1020,6 +1039,7 @@ fn try_help(e: Option<anyhow::Error>) -> io::Result<()> {
 }
 
 fn run(args: FoximgArgs) {
+    foximg_log::quiet(args.quiet);
     foximg_log::out(FoximgLogOut::Stdout(std::io::stdout()));
 
     let default_format = if args.lock.is_none() {

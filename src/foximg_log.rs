@@ -86,6 +86,10 @@ pub fn quiet(val: bool) {
 }
 
 fn show_msg(msg: &str) {
+    if matches!(*LOG_OUT.lock().unwrap(), FoximgLogOut::Stderr(_)) {
+        return;
+    }
+
     // tinyfiledialogs doesn't allow any quotes in messages for security reasons:
     // https://github.com/jdm/tinyfiledialogs-rs/issues/19#issuecomment-703524215
     // https://nvd.nist.gov/vuln/detail/cve-2020-36767

@@ -24,6 +24,19 @@ impl Display for AnimationLoops {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for AnimationLoops {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AnimationLoops::Finite(i) => serializer.serialize_some(i),
+            AnimationLoops::Infinite => serializer.serialize_f32(f32::INFINITY),
+        }
+    }
+}
+
 /// Trait for animated image decoders that can get how many times the animation iterates.
 pub trait AnimationLoopsDecoder {
     /// Returns how many times the decoded animation iterates.
