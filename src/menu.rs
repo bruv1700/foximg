@@ -140,8 +140,7 @@ static FOXIMG_MENU: &[MenuBtn] = {
     }
 
     fn btn_toggle_fullscreen(fm: &mut FoximgMenu<'_>) -> bool {
-        fm.f.state.fullscreen = !fm.f.state.fullscreen;
-        fm.f.rl.toggle_borderless_windowed();
+        fm.f.toggle_fullscreen();
         true
     }
 

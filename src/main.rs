@@ -406,7 +406,12 @@ impl<'a> FoximgDraw<'a> {
             scaleto: foximg.scaleto,
         };
 
-        d.d.clear_background(foximg.style.bg);
+        d.d.clear_background(if foximg.transparent {
+            Color::BLANK
+        } else { 
+            *foximg.style.bg 
+        });
+
         if let (None | Some(FoximgLock::Images), None) = (foximg.lock, &foximg.images) {
             d.draw_large_centered_text("drag + drop an image");
         }
@@ -431,6 +436,8 @@ pub struct Foximg {
     lock: Option<FoximgLock>,
     title_format: String,
     title: String,
+    transparent: bool,
+    undecorated: bool,
     scaleto: bool,
 
     rl: RaylibHandle,
@@ -441,6 +448,9 @@ pub struct Foximg {
 impl Foximg {
     pub fn init(
         lock: Option<FoximgLock>,
+        transparent: bool,
+        undecorated: bool,
+        ontop: bool,
         verbose: bool, 
         override_state: Option<FoximgState>, 
         override_style: Option<FoximgStyle>,
@@ -458,11 +468,20 @@ impl Foximg {
                 TraceLogLevel::LOG_INFO
             });
 
+        if transparent {
+            rl_builder.transparent();
+        }
+            
+        if undecorated {
+            rl_builder.undecorated();
+        }
+
         if !scaleto {
             rl_builder.resizable();
         }
 
         let (mut rl, rl_thread) = rl_builder.build();
+        rl.set_window_state(rl.get_window_state().set_window_topmost(ontop));
         rl.set_exit_key(None);
         rl.set_target_fps(60);
 
@@ -525,6 +544,8 @@ impl Foximg {
             lock,
             title_format,
             title,
+            transparent,
+            undecorated,
             scaleto,
             rl,
             rl_thread,
@@ -533,9 +554,11 @@ impl Foximg {
     }
 
     fn toggle_fullscreen(&mut self) {
-        if self.rl.is_key_pressed(KeyboardKey::KEY_F11) {
-            self.state.fullscreen = !self.state.fullscreen;
-            self.rl.toggle_borderless_windowed();
+        self.state.fullscreen = !self.state.fullscreen;
+        self.rl.toggle_borderless_windowed();
+
+        if self.undecorated && !self.state.fullscreen {
+            self.rl.set_window_state(self.rl.get_window_state().set_window_undecorated(true));
         }
     }
 
@@ -544,7 +567,10 @@ impl Foximg {
             instsance.update(&self.rl);
         }
 
-        self.toggle_fullscreen();
+        if self.rl.is_key_pressed(KeyboardKey::KEY_F11) {
+            self.toggle_fullscreen();
+        }
+
         self.mouse_pos = self.rl.get_mouse_position();
     }
 
@@ -771,6 +797,9 @@ struct FoximgArgs<'a> {
     state: Option<FoximgState>,
     style: Option<FoximgStyle>,
     title: Option<&'a str>,
+    transparent: bool,
+    undecorated: bool,
+    ontop: bool,
     verbose: bool,
     path: Option<&'a str>,
 }
@@ -785,6 +814,9 @@ impl<'a> FoximgArgs<'a> {
             state: None,
             style: None,
             title: None,
+            transparent: false,
+            undecorated: false,
+            ontop: false,
             verbose: cfg!(debug_assertions),
             path: None,
         }
@@ -824,6 +856,12 @@ impl<'a> FoximgArgs<'a> {
                 self.title = Some(title);
                 Ok(())
             });
+        } else if arg == "--transparent" {
+            self.transparent = true;
+        } else if arg == "--undecorated" {
+            self.undecorated = true;
+        } else if arg == "--ontop" {
+            self.ontop = true;
         } else if arg == "--verbose" {
             self.verbose = true;
         } else if arg == "--version" {
@@ -1022,6 +1060,9 @@ fn try_help(e: Option<anyhow::Error>) -> io::Result<()> {
     writeln!(out, "    {gray_color}    --state=TOML    {reset_color}Set window's state according to the format in foximg_state.toml")?;
     writeln!(out, "    {gray_color}    --style=TOML    {reset_color}Set window's style according to the format in foximg_style.toml")?;
     writeln!(out, "    {gray_color}    --title=FORMAT  {reset_color}Set window's title")?;
+    writeln!(out, "    {gray_color}    --transparent   {reset_color}Set window to be transparent")?;
+    writeln!(out, "    {gray_color}    --undecorated   {reset_color}Set window to not have a border")?;
+    writeln!(out, "    {gray_color}    --ontop         {reset_color}Set window always on top")?;
     writeln!(out, "    {gray_color}-v, --verbose       {reset_color}Make TRACE and DEBUG log messages")?;
     writeln!(out, "    {gray_color}    --version       {reset_color}Print foximg's version")?;
     writeln!(out, "\n{green_color}TOML:{reset_color}")?;
@@ -1050,6 +1091,9 @@ fn run(args: FoximgArgs) {
 
     let foximg = Foximg::init(
         args.lock,
+        args.transparent,
+        args.undecorated,
+        args.ontop,
         args.verbose, 
         args.state,
         args.style,
