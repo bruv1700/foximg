@@ -304,7 +304,7 @@ impl Foximg {
     }
 
     pub fn skip_images(&mut self) -> bool {
-        if self.images.is_none() {
+        if self.images.is_none() || self.lock.is_some() {
             return false;
         }
 
