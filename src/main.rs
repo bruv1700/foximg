@@ -5,7 +5,7 @@ use std::{
 };
 
 use aho_corasick::{AhoCorasick, MatchKind};
-use config::{FoximgConfig, FoximgIcon, FoximgSettings, FoximgState, FoximgStyle};
+use config::{FoximgConfig, FoximgIcon, /* FoximgSettings , */FoximgState, FoximgStyle};
 use foximg_log::FoximgLogOut;
 use images::FoximgImages;
 use menu::FoximgMenu;
@@ -303,9 +303,9 @@ impl<'a> FoximgDraw<'a> {
             self.skip_count,
             rvec2(
                 screen_width - text_width - rotation_text_right_offset - (resources::SYMBOL_PADDING * 2.) + resources::TEXT_RIGHT_OFFSET,
-                screen_height - resources::SYMBOL_SIDE as f32 - resources::FLIP_OFFSET,
+                screen_height - resources::SYMBOL_SIDE - resources::FLIP_OFFSET,
             ),
-            resources::SYMBOL_SIDE as f32,
+            resources::SYMBOL_SIDE,
             1.,
             self.style.command,
         );
@@ -423,7 +423,7 @@ impl<'a> FoximgDraw<'a> {
 pub struct Foximg {
     style: FoximgStyle,
     state: FoximgState,
-    settings: FoximgSettings,
+    // settings: FoximgSettings,
     resources: FoximgResources,
     images: Option<Box<FoximgImages>>,
 
@@ -446,42 +446,39 @@ pub struct Foximg {
 }
 
 impl Foximg {
-    pub fn init(
-        lock: Option<FoximgLock>,
-        transparent: bool,
-        undecorated: bool,
-        ontop: bool,
-        verbose: bool, 
-        override_state: Option<FoximgState>, 
-        override_style: Option<FoximgStyle>,
-        title_format: String, 
-        scaleto: bool
-    ) -> Self {
+    pub fn init(args: &mut FoximgArgs) -> Self {
         // SAFETY: As of raylib-rs 5.5.1, this always returns Ok.
         callbacks::set_trace_log_callback(foximg_log::tracelog).unwrap();
 
+        let default_format = if args.lock.is_none() {
+            "foximg %v%! \n[%u of %l] - %f"
+        } else {
+            "foximg %v%! \n- %f"
+        };
+
+        let title_format = args.title.unwrap_or(default_format).to_string();
         let mut rl_builder = raylib::init();
         rl_builder.vsync()
-            .log_level(if verbose {
+            .log_level(if args.verbose {
                 TraceLogLevel::LOG_ALL
             } else {
                 TraceLogLevel::LOG_INFO
             });
 
-        if transparent {
+        if args.transparent {
             rl_builder.transparent();
         }
             
-        if undecorated {
+        if args.undecorated {
             rl_builder.undecorated();
         }
 
-        if !scaleto {
+        if !args.scaleto {
             rl_builder.resizable();
         }
 
         let (mut rl, rl_thread) = rl_builder.build();
-        rl.set_window_state(rl.get_window_state().set_window_topmost(ontop));
+        rl.set_window_state(rl.get_window_state().set_window_topmost(args.ontop));
         rl.set_exit_key(None);
         rl.set_target_fps(60);
 
@@ -489,7 +486,7 @@ impl Foximg {
         rl.set_window_title(&rl_thread, &title);
 
         // We don't remember state if it's manually overriden using arguments.
-        let instance = if override_state.is_some() {
+        let instance = if args.state.is_some() {
             None
         } else {
             FoximgInstance::new(&mut rl)
@@ -498,7 +495,7 @@ impl Foximg {
         // Style must be initialized before state because on Windows the titlebar's color gets updated
         // only once it's resized. The window can't get resized if it's already maximized, so the
         // window appears in light mode on startup otherwise.
-        let style = override_style
+        let style = args.style.take()
             .inspect(|style| {
                 rl.trace_log(TraceLogLevel::LOG_INFO, "Loaded style from arguments:");
                 style.update(&mut rl);
@@ -511,13 +508,13 @@ impl Foximg {
         {
             FoximgState::new(&mut rl)
         } else {
-            override_state.inspect(|state| {
+            args.state.take().inspect(|state| {
                 rl.trace_log(TraceLogLevel::LOG_INFO, "Loaded state from arguments:");
                 state.update(&mut rl);
             }).unwrap_or_default()
         };
 
-        let settings = FoximgSettings::new(&mut rl);
+        // let settings = FoximgSettings::new(&mut rl);
         let resources = FoximgResources::new(&mut rl, &rl_thread);
         let icon = FoximgIcon::new(&mut rl);
 
@@ -537,16 +534,16 @@ impl Foximg {
                 ..Default::default()
             },
             skip_count: String::new(),
+            lock: args.lock,
+            transparent: args.transparent,
+            undecorated: args.undecorated,
+            scaleto: args.scaleto,
             state,
-            settings,
+            // settings,
             style,
             resources,
-            lock,
             title_format,
             title,
-            transparent,
-            undecorated,
-            scaleto,
             rl,
             rl_thread,
             instance,
@@ -788,7 +785,7 @@ pub enum FoximgLock {
     Ui,
 }
 
-struct FoximgArgs<'a> {
+pub struct FoximgArgs<'a> {
     mode: FoximgMode,
 
     lock: Option<FoximgLock>,
@@ -804,8 +801,8 @@ struct FoximgArgs<'a> {
     path: Option<&'a str>,
 }
 
-impl<'a> FoximgArgs<'a> {
-    pub fn new() -> Self {
+impl Default for FoximgArgs<'_> {
+    fn default() -> Self {
         Self {
             mode: FoximgMode::Normal,
             lock: None,
@@ -821,7 +818,9 @@ impl<'a> FoximgArgs<'a> {
             path: None,
         }
     }
+}
 
+impl<'a> FoximgArgs<'a> {
     fn set_lock(&mut self) {
         if self.lock.is_none() {
             self.lock = Some(FoximgLock::Images);
@@ -939,7 +938,7 @@ where
 {
     if option_arg.is_empty() {
         return Err(Some(anyhow::anyhow!("\"{option}\" must have an argument")));
-    } else if option_arg.chars().nth(0) != Some('=') {
+    } else if !option_arg.starts_with('=') {
         return Err(Some(anyhow::anyhow!("Unknown option \"{option}\"")));
     }
 
@@ -987,7 +986,7 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    FoximgArgs::new().parse_args(&args)()
+    FoximgArgs::default().parse_args(&args)()
 }
 
 #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -1079,28 +1078,11 @@ fn try_help(e: Option<anyhow::Error>) -> io::Result<()> {
     Ok(())
 }
 
-fn run(args: FoximgArgs) {
+fn run(mut args: FoximgArgs) {
     foximg_log::quiet(args.quiet);
     foximg_log::out(FoximgLogOut::Stdout(std::io::stdout()));
 
-    let default_format = if args.lock.is_none() {
-        "foximg %v%! \n[%u of %l] - %f"
-    } else {
-        "foximg %v%! \n- %f"
-    };
-
-    let foximg = Foximg::init(
-        args.lock,
-        args.transparent,
-        args.undecorated,
-        args.ontop,
-        args.verbose, 
-        args.state,
-        args.style,
-        args.title.unwrap_or(default_format).to_string(), 
-        args.scaleto
-    );
-    
+    let foximg = Foximg::init(&mut args);
     foximg.run(args.path);
     foximg_log::tracelog(
         TraceLogLevel::LOG_INFO,

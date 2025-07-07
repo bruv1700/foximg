@@ -42,16 +42,15 @@ impl<'a> FoximgDynamicImage<'a> {
         let reader = BufReader::new(File::open(path)?);
         let image_reader = ImageReader::new(reader).with_guessed_format()?;
 
-        match image_reader.format().unwrap() {
-            format @ (ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP) => {
-                return Err(ImageError::Unsupported(
-                    UnsupportedError::from_format_and_kind(
-                        ImageFormatHint::Exact(format),
-                        UnsupportedErrorKind::Format(ImageFormatHint::Exact(format)),
-                    ),
-                ));
-            }
-            _ => (),
+        if let format @ (ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP) =
+            image_reader.format().unwrap()
+        {
+            return Err(ImageError::Unsupported(
+                UnsupportedError::from_format_and_kind(
+                    ImageFormatHint::Exact(format),
+                    UnsupportedErrorKind::Format(ImageFormatHint::Exact(format)),
+                ),
+            ));
         };
 
         let ext = path.extension().unwrap_or_default();

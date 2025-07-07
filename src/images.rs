@@ -613,10 +613,7 @@ impl Foximg {
                 type Item = Result<PathBuf, Option<std::io::Error>>;
 
                 fn next(&mut self) -> Option<Self::Item> {
-                    let Some(file) = self.0.next() else {
-                        return None;
-                    };
-
+                    let file = self.0.next()?;
                     let file = match file {
                         Ok(file) => file,
                         Err(e) => return Some(Err(Some(e))),

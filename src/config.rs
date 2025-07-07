@@ -262,25 +262,25 @@ impl FoximgConfig for FoximgState {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct FoximgSettings {
-    pub antialiasing: bool,
-}
+// #[derive(Serialize, Deserialize)]
+// pub struct FoximgSettings {
+//     pub antialiasing: bool,
+// }
 
-impl Default for FoximgSettings {
-    fn default() -> Self {
-        Self {
-            antialiasing: false,
-        }
-    }
-}
+// impl Default for FoximgSettings {
+//     fn default() -> Self {
+//         Self {
+//             antialiasing: false,
+//         }
+//     }
+// }
 
-impl FoximgConfig for FoximgSettings {
-    const FILE: &str = "foximg_settings.toml";
-    const LOCAL: bool = false;
+// impl FoximgConfig for FoximgSettings {
+//     const FILE: &str = "foximg_settings.toml";
+//     const LOCAL: bool = false;
 
-    fn update(&self, _: &mut RaylibHandle) {}
-}
+//     fn update(&self, _: &mut RaylibHandle) {}
+// }
 
 #[derive(Serialize, Deserialize)]
 // I intentionally choose not to annotate this with #[serde(default)] because I actually do want the

@@ -30,7 +30,7 @@
 use std::io::{self, BufRead, Cursor, Read, Seek, Write};
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
-use std::{mem, u16};
+use std::mem;
 
 use gif::ColorOutput;
 use gif::{DisposalMethod, Frame};
