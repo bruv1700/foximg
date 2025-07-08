@@ -9,7 +9,7 @@ raylib = { version = "5.5.1", features = ["serde", "with_serde"] }
 name = "foximg"
 description = "Simple & convenient image viewer"
 authors = ["bruvy"]
-version = "0.3.0-dev"
+version = "0.3.0"
 license-file = "LICENSE"
 edition = "2024"
 
