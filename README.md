@@ -2,11 +2,12 @@
 
 Simple & convenient image viewer built in Rust using [Raylib].
 
-[Raylib]: (http://www.raylib.com/)
+[Raylib]: http://www.raylib.com/
 
 # Features
 
-foximg prioritizes a wonderful UX, and fast decoding speeds thanks to [image-rs].
+foximg prioritizes a wonderful UX, and fast decoding speeds thanks to [image-rs]. foximg also allows
+for reading image metadata in the command-line as either TOML or JSON.
 
 - Drag and drop an image to load it and its folder, or right-click and press `Open...`
 - Click the buttons on each side (Or press A or D) to go through the photo library.
@@ -45,10 +46,12 @@ I strongly reccommend to install it on its own seperate folder.
 
 On Linux, foximg complies with the [XDG Base Directory specification].
 
-foximg has not been tested on MacOS yet.
+<!--foximg has not been tested on MacOS yet.
+    ^^^
+    I really disliked finding out how expensive developing for MacOS is. for the forseeable I won't
+    be caring about MacOS :)
+-->
 
 I will release binaries for foximg soon :) For now, download the source and compile it yourself.
 
-<!-- I'm linking to the arch wiki because specifications.freedesktop.org is 404 as of the time I'm 
-writing this -->
-[XDG Base Directory specification]: https://wiki.archlinux.org/title/XDG_Base_Directory
+[XDG Base Directory specification]: https://specifications.freedesktop.org/basedir-spec/latest/
