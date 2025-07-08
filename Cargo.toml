@@ -10,6 +10,7 @@ name = "foximg"
 description = "Simple & convenient image viewer"
 authors = ["bruvy"]
 version = "0.3.0-dev"
+license-file = "LICENSE"
 edition = "2024"
 
 [profile.release]
@@ -74,3 +75,33 @@ windows-link = "0.1.1"
 InternalName = "foximg"
 LegalCopyright = "Copyright (c) 2024-2025 bruvy"
 OriginalFilename = "foximg.exe"
+
+# Debian specific:
+
+[package.metadata.deb]
+separate-debug-symbols = true
+assets = [
+    "$auto",
+    [
+        "share/applications/foximg.desktop",
+        "usr/share/applications/foximg.desktop",
+        "644",
+    ],
+    [
+        "share/pixmaps/foximg.png",
+        "usr/share/pixmaps/foximg.png",
+        "644",
+    ],
+]
+recommends = [
+    "libgl1",
+    "libegl1",
+    "libglx0",
+    "libopengl0",
+    "libxkbcommon0 (>= 0.5.0)",
+    "libxi6 | libxkbcommon0 (>= 0.5.0)",
+    "libx11-6 | libwayland-client0 (>= 1.0.2)",
+    "libxrandr2 | libwayland-cursor0 (>= 1.0.2)",
+    "libxcursor1 | libwayland-cursor0 (>= 1.0.2)",
+    "zenity | kdialog | yad | python3-tk | python-tk"
+]
