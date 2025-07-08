@@ -81,7 +81,7 @@ impl MenuBtn {
 }
 
 /// The index at which the foximg right-click menu must be shown from when no image gallery is loaded.
-const FOXIMG_MENU_NO_IMAGES: usize = 2;
+const FOXIMG_MENU_NO_IMAGES: usize = 3;
 
 static FOXIMG_MENU: &[MenuBtn] = {
     const EXIT_SHORTCUT: &str = if cfg!(target_os = "windows") {
@@ -106,6 +106,19 @@ static FOXIMG_MENU: &[MenuBtn] = {
         MenuBtn::new_shortcut("Vertical", MenuBtnType::OnPressed(btn_vertical), "Shift+E"),
     ];
 
+    static FOXIMG_MENU_NAVIGATE: &[MenuBtn] = &[
+        MenuBtn::new_shortcut(
+            "First Image",
+            MenuBtnType::OnPressedExit(btn_first_img),
+            "0",
+        ),
+        MenuBtn::new_shortcut(
+            "Last Image",
+            MenuBtnType::OnPressedExit(btn_last_img),
+            "Shift+4",
+        ),
+    ];
+
     fn btn_open(fm: &mut FoximgMenu<'_>) -> bool {
         static FILTER: (&[&str], &str) = (
             &[
@@ -127,8 +140,7 @@ static FOXIMG_MENU: &[MenuBtn] = {
     }
 
     fn btn_toggle_fullscreen(fm: &mut FoximgMenu<'_>) -> bool {
-        fm.f.state.fullscreen = !fm.f.state.fullscreen;
-        fm.f.rl.toggle_borderless_windowed();
+        fm.f.toggle_fullscreen();
         true
     }
 
@@ -168,9 +180,28 @@ static FOXIMG_MENU: &[MenuBtn] = {
         }
     }
 
+    fn btn_first_img(fm: &mut FoximgMenu<'_>) -> bool {
+        fm.f.images_with(|f, images| {
+            images.set_current(0);
+            images.update_window(f);
+        });
+
+        true
+    }
+
+    fn btn_last_img(fm: &mut FoximgMenu<'_>) -> bool {
+        fm.f.images_with(|f, images| {
+            images.set_current(images.len() - 1);
+            images.update_window(f);
+        });
+
+        true
+    }
+
     &[
         MenuBtn::new("Rotate", MenuBtnType::SubMenu(FOXIMG_MENU_ROTATE)),
         MenuBtn::new("Mirror", MenuBtnType::SubMenu(FOXIMG_MENU_MIRROR)),
+        MenuBtn::new("Navigate", MenuBtnType::SubMenu(FOXIMG_MENU_NAVIGATE)),
         MenuBtn::new("Open...", MenuBtnType::OnPressedExit(btn_open)),
         MenuBtn::new_shortcut(
             "Toggle Fullscreen",
@@ -247,6 +278,19 @@ impl<'a, 'b> FoximgUpdateSubMenu<'a, 'b> {
 }
 
 impl FoximgDraw<'_> {
+    fn draw_menu_shadow(&mut self, menu: &'static [MenuBtn], x: f32, y: f32) {
+        let shadow_x = x + MenuBtn::HEIGHT / 8.;
+        let shadow_y = y + MenuBtn::HEIGHT / 8.;
+
+        self.d.draw_rectangle(
+            shadow_x as i32,
+            shadow_y as i32,
+            MenuBtn::WIDTH as i32,
+            MenuBtn::HEIGHT as i32 * menu.len() as i32,
+            self.style.bg.alpha(0.5),
+        );
+    }
+
     fn draw_menu(&mut self, menu: &'static [MenuBtn], x: f32, mut y: f32) {
         for btn in menu {
             self.d
@@ -302,23 +346,24 @@ impl FoximgDraw<'_> {
         }
     }
 
-    fn draw_menus(
+    fn draw_menu_objects(
         &mut self,
         menus: &[&'static [MenuBtn]],
         rects: &[Rectangle],
         hovering_on: (usize, usize),
         showing: (usize, usize),
+        draw: fn(&mut Self, menu: &'static [MenuBtn], x: f32, y: f32),
     ) {
         let col = showing.0;
         let row = showing.1;
         let showing = &menus[col][row];
 
         if let MenuBtnType::SubMenu(sub_menu) = showing.btn_type {
-            self.draw_menu(sub_menu, rects[col + 1].x, rects[col + 1].y);
+            draw(self, sub_menu, rects[col + 1].x, rects[col + 1].y);
         }
 
         for i in 0..=hovering_on.0 {
-            self.draw_menu(menus[i], rects[i].x, rects[i].y);
+            draw(self, menus[i], rects[i].x, rects[i].y);
         }
     }
 }
@@ -429,10 +474,23 @@ impl<'a> FoximgMenu<'a> {
             FoximgDraw::begin(self.f, |mut d, images| {
                 if let Some(images) = images {
                     d.draw_current_img(images);
-                } else {
-                    d.draw_large_centered_text("drag + drop an image");
                 }
-                d.draw_menus(&self.menus, &self.rects, self.hovering_on, self.showing);
+
+                d.draw_menu_objects(
+                    &self.menus,
+                    &self.rects,
+                    self.hovering_on,
+                    self.showing,
+                    FoximgDraw::draw_menu_shadow,
+                );
+
+                d.draw_menu_objects(
+                    &self.menus,
+                    &self.rects,
+                    self.hovering_on,
+                    self.showing,
+                    FoximgDraw::draw_menu,
+                );
             });
         }
 

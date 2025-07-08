@@ -5,6 +5,12 @@ use crate::images;
 const YUDIT_SIZE: f32 = 64.;
 
 pub const BUTTON_FONT_SIZE: f32 = 12.;
+/// The width of the whitespace pixels around each side of the flip texture.
+pub const FLIP_OFFSET: f32 = 2.;
+pub const SYMBOL_SIDE: f32 = 64.;
+pub const SYMBOL_PADDING: f32 = 10.;
+/// The width of the whitespace pixels on the right side of the yudit 0.
+pub const TEXT_RIGHT_OFFSET: f32 = 9.;
 
 pub const fn yudit_spacing(size: f32) -> f32 {
     size / self::YUDIT_SIZE

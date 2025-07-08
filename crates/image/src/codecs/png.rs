@@ -1,5 +1,3 @@
-//! Copy of the Png decoder source in image-rs 0.25.6 with additional functionality.
-//!
 //! Decoding and Encoding of PNG Images
 //!
 //! PNG (Portable Network Graphics) is an image format that supports lossless compression.
@@ -7,22 +5,27 @@
 //! # Related Links
 //! * <http://www.w3.org/TR/PNG/> - The PNG Specification
 
-use std::io::{BufRead, Seek};
+use std::borrow::Cow;
+use std::fmt;
+use std::io::{BufRead, Seek, Write};
 use std::num::NonZeroU32;
 
 use png::{BlendOp, DisposeOp};
 
-use image::error::{
-    DecodingError, ImageError, ImageResult, LimitError, LimitErrorKind,
+use crate::animation::{Delay, Frame, Frames, Ratio};
+use crate::color::{Blend, ColorType, ExtendedColorType};
+use crate::error::{
+    DecodingError, EncodingError, ImageError, ImageResult, LimitError, LimitErrorKind,
     ParameterError, ParameterErrorKind, UnsupportedError, UnsupportedErrorKind,
 };
-use image::{AnimationDecoder, ImageDecoder, ImageFormat, Pixel};
-use image::{ColorType, ExtendedColorType};
-use image::{DynamicImage, GenericImage, ImageBuffer, Luma, LumaA, Rgb, Rgba, RgbaImage};
-use image::{Frame, Frames};
-use image::{GenericImageView, Limits};
+use crate::foximg::{AnimationLoops, AnimationLoopsDecoder};
+use crate::image::{AnimationDecoder, ImageDecoder, ImageEncoder, ImageFormat};
+use crate::{DynamicImage, GenericImage, ImageBuffer, Luma, LumaA, Rgb, Rgba, RgbaImage};
+use crate::{GenericImageView, Limits};
 
-use super::{AnimationLoops, AnimationLoopsDecoder};
+// http://www.w3.org/TR/PNG-Structure.html
+// The first eight bytes of a PNG file always contain the following (decimal) values:
+pub(crate) const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
 /// PNG decoder
 pub struct PngDecoder<R: BufRead + Seek> {
@@ -39,20 +42,20 @@ impl<R: BufRead + Seek> PngDecoder<R> {
 
     /// Creates a new decoder that decodes from the stream ```r``` with the given limits.
     pub fn with_limits(r: R, limits: Limits) -> ImageResult<PngDecoder<R>> {
-        limits.check_support(&image::LimitSupport::default())?;
+        limits.check_support(&crate::LimitSupport::default())?;
 
         let max_bytes = usize::try_from(limits.max_alloc.unwrap_or(u64::MAX)).unwrap_or(usize::MAX);
         let mut decoder = png::Decoder::new_with_limits(r, png::Limits { bytes: max_bytes });
         decoder.set_ignore_text_chunk(true);
 
-        let info = decoder.read_header_info().map_err(error_from_png)?;
+        let info = decoder.read_header_info().map_err(ImageError::from_png)?;
         limits.check_dimensions(info.width, info.height)?;
 
         // By default the PNG decoder will scale 16 bpc to 8 bpc, so custom
         // transformations must be set. EXPAND preserves the default behavior
         // expanding bpc < 8 to 8 bpc.
         decoder.set_transformations(png::Transformations::EXPAND);
-        let reader = decoder.read_info().map_err(error_from_png)?;
+        let reader = decoder.read_info().map_err(ImageError::from_png)?;
         let (color_type, bits) = reader.output_color_type();
         let color_type = match (color_type, bits) {
             (png::ColorType::Grayscale, png::BitDepth::Eight) => ColorType::L8,
@@ -65,46 +68,46 @@ impl<R: BufRead + Seek> PngDecoder<R> {
             (png::ColorType::Rgba, png::BitDepth::Sixteen) => ColorType::Rgba16,
 
             (png::ColorType::Grayscale, png::BitDepth::One) => {
-                return Err(unsupported_color(ExtendedColorType::L1));
+                return Err(unsupported_color(ExtendedColorType::L1))
             }
             (png::ColorType::GrayscaleAlpha, png::BitDepth::One) => {
-                return Err(unsupported_color(ExtendedColorType::La1));
+                return Err(unsupported_color(ExtendedColorType::La1))
             }
             (png::ColorType::Rgb, png::BitDepth::One) => {
-                return Err(unsupported_color(ExtendedColorType::Rgb1));
+                return Err(unsupported_color(ExtendedColorType::Rgb1))
             }
             (png::ColorType::Rgba, png::BitDepth::One) => {
-                return Err(unsupported_color(ExtendedColorType::Rgba1));
+                return Err(unsupported_color(ExtendedColorType::Rgba1))
             }
 
             (png::ColorType::Grayscale, png::BitDepth::Two) => {
-                return Err(unsupported_color(ExtendedColorType::L2));
+                return Err(unsupported_color(ExtendedColorType::L2))
             }
             (png::ColorType::GrayscaleAlpha, png::BitDepth::Two) => {
-                return Err(unsupported_color(ExtendedColorType::La2));
+                return Err(unsupported_color(ExtendedColorType::La2))
             }
             (png::ColorType::Rgb, png::BitDepth::Two) => {
-                return Err(unsupported_color(ExtendedColorType::Rgb2));
+                return Err(unsupported_color(ExtendedColorType::Rgb2))
             }
             (png::ColorType::Rgba, png::BitDepth::Two) => {
-                return Err(unsupported_color(ExtendedColorType::Rgba2));
+                return Err(unsupported_color(ExtendedColorType::Rgba2))
             }
 
             (png::ColorType::Grayscale, png::BitDepth::Four) => {
-                return Err(unsupported_color(ExtendedColorType::L4));
+                return Err(unsupported_color(ExtendedColorType::L4))
             }
             (png::ColorType::GrayscaleAlpha, png::BitDepth::Four) => {
-                return Err(unsupported_color(ExtendedColorType::La4));
+                return Err(unsupported_color(ExtendedColorType::La4))
             }
             (png::ColorType::Rgb, png::BitDepth::Four) => {
-                return Err(unsupported_color(ExtendedColorType::Rgb4));
+                return Err(unsupported_color(ExtendedColorType::Rgb4))
             }
             (png::ColorType::Rgba, png::BitDepth::Four) => {
-                return Err(unsupported_color(ExtendedColorType::Rgba4));
+                return Err(unsupported_color(ExtendedColorType::Rgba4))
             }
 
             (png::ColorType::Indexed, bits) => {
-                return Err(unsupported_color(ExtendedColorType::Unknown(bits as u8)));
+                return Err(unsupported_color(ExtendedColorType::Unknown(bits as u8)))
             }
         };
 
@@ -180,7 +183,7 @@ impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
         use byteorder_lite::{BigEndian, ByteOrder, NativeEndian};
 
         assert_eq!(u64::try_from(buf.len()), Ok(self.total_bytes()));
-        self.reader.next_frame(buf).map_err(error_from_png)?;
+        self.reader.next_frame(buf).map_err(ImageError::from_png)?;
         // PNG images are big endian. For 16 bit per channel and larger types,
         // the buffer may need to be reordered to native endianness per the
         // contract of `read_image`.
@@ -203,7 +206,7 @@ impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
     }
 
     fn set_limits(&mut self, limits: Limits) -> ImageResult<()> {
-        limits.check_support(&image::LimitSupport::default())?;
+        limits.check_support(&crate::LimitSupport::default())?;
         let info = self.reader.info();
         limits.check_dimensions(info.width, info.height)?;
         self.limits = limits;
@@ -302,7 +305,7 @@ impl<R: BufRead + Seek> ApngDecoder<R> {
             self.inner
                 .reader
                 .next_frame(&mut buffer)
-                .map_err(error_from_png)?;
+                .map_err(ImageError::from_png)?;
             self.has_thumbnail = false;
         }
 
@@ -361,7 +364,7 @@ impl<R: BufRead + Seek> ApngDecoder<R> {
         self.inner
             .reader
             .next_frame(&mut buffer)
-            .map_err(error_from_png)?;
+            .map_err(ImageError::from_png)?;
         let info = self.inner.reader.info();
 
         // Find out how to interpret the decoded frame.
@@ -467,29 +470,7 @@ impl<'a, R: BufRead + Seek + 'a> AnimationDecoder<'a> for ApngDecoder<R> {
                     0 => 100,
                     d => u32::from(d),
                 };
-                // let delay = Delay::from_ratio(Ratio::new(num, denom));
-                // HACKING our way into constructing an image::Delay from our own Ratio struct.
-                let delay = {
-                    /// Private struct copied from image-rs.
-                    #[derive(Copy, Clone)]
-                    #[allow(unused)]
-                    struct Ratio {
-                        numer: u32,
-                        denom: u32,
-                    }
-
-                    impl Ratio {
-                        #[inline]
-                        pub fn new(numerator: u32, denominator: u32) -> Self {
-                            assert_ne!(denominator, 0);
-                            Self {
-                                numer: numerator,
-                                denom: denominator,
-                            }
-                        }
-                    }
-                    unsafe { std::mem::transmute::<Ratio, image::Delay>(Ratio::new(num, denom)) }
-                };
+                let delay = Delay::from_ratio(Ratio::new(num, denom));
                 Some(Ok(Frame::from_parts(image, 0, 0, delay)))
             }
         }
@@ -512,31 +493,281 @@ impl<R: BufRead + Seek> AnimationLoopsDecoder for ApngDecoder<R> {
     }
 }
 
-fn error_from_png(err: png::DecodingError) -> ImageError {
-    use png::DecodingError::*;
-    match err {
-        IoError(err) => ImageError::IoError(err),
-        // The input image was not a valid PNG.
-        err @ Format(_) => ImageError::Decoding(DecodingError::new(ImageFormat::Png.into(), err)),
-        // Other is used when:
-        // - The decoder is polled for more animation frames despite being done (or not being animated
-        //   in the first place).
-        // - The output buffer does not have the required size.
-        err @ Parameter(_) => ImageError::Parameter(ParameterError::from_kind(
-            ParameterErrorKind::Generic(err.to_string()),
-        )),
-        LimitsExceeded => {
-            ImageError::Limits(LimitError::from_kind(LimitErrorKind::InsufficientMemory))
+/// PNG encoder
+pub struct PngEncoder<W: Write> {
+    w: W,
+    compression: CompressionType,
+    filter: FilterType,
+    icc_profile: Vec<u8>,
+}
+
+/// Compression level of a PNG encoder. The default setting is `Fast`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+#[derive(Default)]
+pub enum CompressionType {
+    /// Default compression level
+    Default,
+    /// Fast, minimal compression
+    #[default]
+    Fast,
+    /// High compression level
+    Best,
+}
+
+/// Filter algorithms used to process image data to improve compression.
+///
+/// The default filter is `Adaptive`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+#[derive(Default)]
+pub enum FilterType {
+    /// No processing done, best used for low bit depth grayscale or data with a
+    /// low color count
+    NoFilter,
+    /// Filters based on previous pixel in the same scanline
+    Sub,
+    /// Filters based on the scanline above
+    Up,
+    /// Filters based on the average of left and right neighbor pixels
+    Avg,
+    /// Algorithm that takes into account the left, upper left, and above pixels
+    Paeth,
+    /// Uses a heuristic to select one of the preceding filters for each
+    /// scanline rather than one filter for the entire image
+    #[default]
+    Adaptive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+enum BadPngRepresentation {
+    ColorType(ExtendedColorType),
+}
+
+impl<W: Write> PngEncoder<W> {
+    /// Create a new encoder that writes its output to ```w```
+    pub fn new(w: W) -> PngEncoder<W> {
+        PngEncoder {
+            w,
+            compression: CompressionType::default(),
+            filter: FilterType::default(),
+            icc_profile: Vec::new(),
+        }
+    }
+
+    /// Create a new encoder that writes its output to `w` with `CompressionType` `compression` and
+    /// `FilterType` `filter`.
+    ///
+    /// It is best to view the options as a _hint_ to the implementation on the smallest or fastest
+    /// option for encoding a particular image. That is, using options that map directly to a PNG
+    /// image parameter will use this parameter where possible. But variants that have no direct
+    /// mapping may be interpreted differently in minor versions. The exact output is expressly
+    /// __not__ part of the SemVer stability guarantee.
+    ///
+    /// Note that it is not optimal to use a single filter type, so an adaptive
+    /// filter type is selected as the default. The filter which best minimizes
+    /// file size may change with the type of compression used.
+    pub fn new_with_quality(
+        w: W,
+        compression: CompressionType,
+        filter: FilterType,
+    ) -> PngEncoder<W> {
+        PngEncoder {
+            w,
+            compression,
+            filter,
+            icc_profile: Vec::new(),
+        }
+    }
+
+    fn encode_inner(
+        self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        color: ExtendedColorType,
+    ) -> ImageResult<()> {
+        let (ct, bits) = match color {
+            ExtendedColorType::L8 => (png::ColorType::Grayscale, png::BitDepth::Eight),
+            ExtendedColorType::L16 => (png::ColorType::Grayscale, png::BitDepth::Sixteen),
+            ExtendedColorType::La8 => (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight),
+            ExtendedColorType::La16 => (png::ColorType::GrayscaleAlpha, png::BitDepth::Sixteen),
+            ExtendedColorType::Rgb8 => (png::ColorType::Rgb, png::BitDepth::Eight),
+            ExtendedColorType::Rgb16 => (png::ColorType::Rgb, png::BitDepth::Sixteen),
+            ExtendedColorType::Rgba8 => (png::ColorType::Rgba, png::BitDepth::Eight),
+            ExtendedColorType::Rgba16 => (png::ColorType::Rgba, png::BitDepth::Sixteen),
+            _ => {
+                return Err(ImageError::Unsupported(
+                    UnsupportedError::from_format_and_kind(
+                        ImageFormat::Png.into(),
+                        UnsupportedErrorKind::Color(color),
+                    ),
+                ))
+            }
+        };
+        let comp = match self.compression {
+            CompressionType::Default => png::Compression::Default,
+            CompressionType::Best => png::Compression::Best,
+            _ => png::Compression::Fast,
+        };
+        let (filter, adaptive_filter) = match self.filter {
+            FilterType::NoFilter => (
+                png::FilterType::NoFilter,
+                png::AdaptiveFilterType::NonAdaptive,
+            ),
+            FilterType::Sub => (png::FilterType::Sub, png::AdaptiveFilterType::NonAdaptive),
+            FilterType::Up => (png::FilterType::Up, png::AdaptiveFilterType::NonAdaptive),
+            FilterType::Avg => (png::FilterType::Avg, png::AdaptiveFilterType::NonAdaptive),
+            FilterType::Paeth => (png::FilterType::Paeth, png::AdaptiveFilterType::NonAdaptive),
+            FilterType::Adaptive => (png::FilterType::Sub, png::AdaptiveFilterType::Adaptive),
+        };
+
+        let mut info = png::Info::with_size(width, height);
+
+        if !self.icc_profile.is_empty() {
+            info.icc_profile = Some(Cow::Borrowed(&self.icc_profile));
+        }
+
+        let mut encoder =
+            png::Encoder::with_info(self.w, info).map_err(|e| ImageError::IoError(e.into()))?;
+
+        encoder.set_color(ct);
+        encoder.set_depth(bits);
+        encoder.set_compression(comp);
+        encoder.set_filter(filter);
+        encoder.set_adaptive_filter(adaptive_filter);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| ImageError::IoError(e.into()))?;
+        writer
+            .write_image_data(data)
+            .map_err(|e| ImageError::IoError(e.into()))
+    }
+}
+
+impl<W: Write> ImageEncoder for PngEncoder<W> {
+    /// Write a PNG image with the specified width, height, and color type.
+    ///
+    /// For color types with 16-bit per channel or larger, the contents of `buf` should be in
+    /// native endian. `PngEncoder` will automatically convert to big endian as required by the
+    /// underlying PNG format.
+    #[track_caller]
+    fn write_image(
+        self,
+        buf: &[u8],
+        width: u32,
+        height: u32,
+        color_type: ExtendedColorType,
+    ) -> ImageResult<()> {
+        use byteorder_lite::{BigEndian, ByteOrder, NativeEndian};
+        use ExtendedColorType::*;
+
+        let expected_buffer_len = color_type.buffer_size(width, height);
+        assert_eq!(
+            expected_buffer_len,
+            buf.len() as u64,
+            "Invalid buffer length: expected {expected_buffer_len} got {} for {width}x{height} image",
+            buf.len(),
+        );
+
+        // PNG images are big endian. For 16 bit per channel and larger types,
+        // the buffer may need to be reordered to big endian per the
+        // contract of `write_image`.
+        // TODO: assumes equal channel bit depth.
+        match color_type {
+            L8 | La8 | Rgb8 | Rgba8 => {
+                // No reodering necessary for u8
+                self.encode_inner(buf, width, height, color_type)
+            }
+            L16 | La16 | Rgb16 | Rgba16 => {
+                // Because the buffer is immutable and the PNG encoder does not
+                // yet take Write/Read traits, create a temporary buffer for
+                // big endian reordering.
+                let mut reordered = vec![0; buf.len()];
+                buf.chunks_exact(2)
+                    .zip(reordered.chunks_exact_mut(2))
+                    .for_each(|(b, r)| BigEndian::write_u16(r, NativeEndian::read_u16(b)));
+                self.encode_inner(&reordered, width, height, color_type)
+            }
+            _ => Err(ImageError::Encoding(EncodingError::new(
+                ImageFormat::Png.into(),
+                BadPngRepresentation::ColorType(color_type),
+            ))),
+        }
+    }
+
+    fn set_icc_profile(&mut self, icc_profile: Vec<u8>) -> Result<(), UnsupportedError> {
+        self.icc_profile = icc_profile;
+        Ok(())
+    }
+}
+
+impl ImageError {
+    fn from_png(err: png::DecodingError) -> ImageError {
+        use png::DecodingError::*;
+        match err {
+            IoError(err) => ImageError::IoError(err),
+            // The input image was not a valid PNG.
+            err @ Format(_) => {
+                ImageError::Decoding(DecodingError::new(ImageFormat::Png.into(), err))
+            }
+            // Other is used when:
+            // - The decoder is polled for more animation frames despite being done (or not being animated
+            //   in the first place).
+            // - The output buffer does not have the required size.
+            err @ Parameter(_) => ImageError::Parameter(ParameterError::from_kind(
+                ParameterErrorKind::Generic(err.to_string()),
+            )),
+            LimitsExceeded => {
+                ImageError::Limits(LimitError::from_kind(LimitErrorKind::InsufficientMemory))
+            }
         }
     }
 }
 
+impl fmt::Display for BadPngRepresentation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::ColorType(color_type) => {
+                write!(f, "The color {color_type:?} can not be represented in PNG.")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BadPngRepresentation {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{BufReader, Cursor, Read};
 
-    #[ignore = "path pointed to does not exist"]
+    #[test]
+    fn ensure_no_decoder_off_by_one() {
+        let dec = PngDecoder::new(BufReader::new(
+            std::fs::File::open("tests/images/png/bugfixes/debug_triangle_corners_widescreen.png")
+                .unwrap(),
+        ))
+        .expect("Unable to read PNG file (does it exist?)");
+
+        assert_eq![(2000, 1000), dec.dimensions()];
+
+        assert_eq![
+            ColorType::Rgb8,
+            dec.color_type(),
+            "Image MUST have the Rgb8 format"
+        ];
+
+        let correct_bytes = crate::image::decoder_to_vec(dec)
+            .expect("Unable to read file")
+            .bytes()
+            .map(|x| x.expect("Unable to read byte"))
+            .collect::<Vec<u8>>();
+
+        assert_eq![6_000_000, correct_bytes.len()];
+    }
+
     #[test]
     fn underlying_error() {
         use std::error::Error;

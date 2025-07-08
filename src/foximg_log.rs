@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{IsTerminal, Stderr, Stdout, Write},
     path::PathBuf,
     process::exit,
     sync::{
@@ -16,14 +16,80 @@ use tinyfiledialogs::MessageBoxIcon;
 
 use crate::FoximgInstance;
 
+fn use_color() -> AtomicBool {
+    let out = LOG_OUT.try_lock().unwrap();
+    let c = if let FoximgLogOut::Stdout(ref stdout) = *out {
+        stdout.is_terminal()
+    } else {
+        true
+    };
+
+    AtomicBool::new(c)
+}
+
+pub enum FoximgLogOut {
+    Stdout(Stdout),
+    Stderr(Stderr),
+}
+
+impl Write for FoximgLogOut {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            FoximgLogOut::Stdout(stdout) => stdout.write(buf),
+            FoximgLogOut::Stderr(stderr) => stderr.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            FoximgLogOut::Stdout(stdout) => stdout.flush(),
+            FoximgLogOut::Stderr(stderr) => stderr.flush(),
+        }
+    }
+
+    fn write_vectored(&mut self, bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<usize> {
+        match self {
+            FoximgLogOut::Stdout(stdout) => stdout.write_vectored(bufs),
+            FoximgLogOut::Stderr(stderr) => stderr.write_vectored(bufs),
+        }
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        match self {
+            FoximgLogOut::Stdout(stdout) => stdout.write_all(buf),
+            FoximgLogOut::Stderr(stderr) => stderr.write_all(buf),
+        }
+    }
+
+    fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        match self {
+            FoximgLogOut::Stdout(stdout) => stdout.write_fmt(fmt),
+            FoximgLogOut::Stderr(stderr) => stderr.write_fmt(fmt),
+        }
+    }
+}
+
 static LOG: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::with_capacity(8 * 1024)));
+static LOG_COLOR: Mutex<LazyLock<AtomicBool>> = Mutex::new(LazyLock::new(self::use_color));
+static LOG_OUT: LazyLock<Mutex<FoximgLogOut>> =
+    LazyLock::new(|| Mutex::new(FoximgLogOut::Stderr(std::io::stderr())));
+
 static LOG_QUIET: AtomicBool = AtomicBool::new(false);
+
+pub fn out(out: FoximgLogOut) {
+    *LOG_OUT.lock().unwrap() = out;
+    *LOG_COLOR.lock().unwrap() = LazyLock::new(self::use_color);
+}
 
 pub fn quiet(val: bool) {
     LOG_QUIET.store(val, Ordering::SeqCst);
 }
 
-fn show_msg(msg: &str, icon: MessageBoxIcon) {
+fn show_msg(msg: &str) {
+    if matches!(*LOG_OUT.lock().unwrap(), FoximgLogOut::Stderr(_)) {
+        return;
+    }
+
     // tinyfiledialogs doesn't allow any quotes in messages for security reasons:
     // https://github.com/jdm/tinyfiledialogs-rs/issues/19#issuecomment-703524215
     // https://nvd.nist.gov/vuln/detail/cve-2020-36767
@@ -46,19 +112,7 @@ fn show_msg(msg: &str, icon: MessageBoxIcon) {
         msg = msg.replace(')', "）");
     }
 
-    tinyfiledialogs::message_box_ok(
-        &format!(
-            "foximg - {}",
-            match icon {
-                MessageBoxIcon::Info => "Info",
-                MessageBoxIcon::Warning => "Warning",
-                MessageBoxIcon::Error => "Error",
-                MessageBoxIcon::Question => "Question",
-            }
-        ),
-        &msg,
-        icon,
-    );
+    tinyfiledialogs::message_box_ok("foximg - Error", &msg, MessageBoxIcon::Error);
 }
 
 #[inline(always)]
@@ -130,20 +184,6 @@ fn foximg_logfile_msg(log: anyhow::Result<PathBuf>) -> String {
     }
 }
 
-pub fn create_file() {
-    let time = Local::now();
-    let time_str = format!("{}: ", time.format("%H:%M:%S"));
-    let log = foximg_logfile(false, time, &format!("{time_str}INFO: Created log file"));
-
-    let icon = if log.is_ok() {
-        MessageBoxIcon::Info
-    } else {
-        MessageBoxIcon::Error
-    };
-
-    self::show_msg(&foximg_logfile_msg(log), icon);
-}
-
 #[cold]
 #[inline(never)]
 pub fn panic(panic_info: &std::panic::PanicHookInfo) {
@@ -151,13 +191,9 @@ pub fn panic(panic_info: &std::panic::PanicHookInfo) {
     let time_str = format!("{}: ", time.format("%H:%M:%S"));
     let panic_str = panic_info.to_string();
 
-    self::print_log(&time_str, TraceLogLevel::LOG_ERROR, "PANIC: ", &panic_str);
-
+    let _ = self::print_log(&time_str, TraceLogLevel::LOG_ERROR, "PANIC: ", &panic_str);
     let log = self::foximg_logfile(true, time, &format!("{time_str}PANIC: {panic_str}"));
-    self::show_msg(
-        &format!("{panic_str}\n\n{}", self::foximg_logfile_msg(log)),
-        MessageBoxIcon::Error,
-    );
+    self::show_msg(&format!("{panic_str}\n\n{}", self::foximg_logfile_msg(log)));
 }
 
 pub fn tracelog(level: TraceLogLevel, msg: &str) {
@@ -176,10 +212,10 @@ pub fn tracelog(level: TraceLogLevel, msg: &str) {
     };
 
     let msg_fmt = format!("{time_str}{level_str}{msg}\n");
-    self::print_log(&time_str, level, level_str, msg);
+    self::print_log(&time_str, level, level_str, msg).unwrap();
 
     if level == LOG_ERROR {
-        self::show_msg(msg, MessageBoxIcon::Error);
+        self::show_msg(msg);
     } else if level == LOG_FATAL {
         // Fatal logs exit the process without running destructors. Therefore we want to delete the
         // instance folder ourselves, since it won't get deleted by the FoximgInstance destructor.
@@ -192,38 +228,54 @@ pub fn tracelog(level: TraceLogLevel, msg: &str) {
         }
 
         let log = self::foximg_logfile(true, time, &msg_fmt);
-        self::show_msg(
-            &format!("{msg}\n\n{}", self::foximg_logfile_msg(log)),
-            MessageBoxIcon::Error,
-        );
+        self::show_msg(&format!("{msg}\n\n{}", self::foximg_logfile_msg(log)));
         exit(1);
     }
 
     self::LOG.lock().unwrap().push_str(&msg_fmt);
 }
 
-fn print_log(time_str: &str, level_color: TraceLogLevel, level_str: &str, msg: &str) {
+fn print_log(
+    time_str: &str,
+    level_color: TraceLogLevel,
+    level_str: &str,
+    msg: &str,
+) -> anyhow::Result<()> {
     use TraceLogLevel::*;
 
     if !(cfg!(all(debug_assertions, target_os = "windows")) || cfg!(not(target_os = "windows")))
         || self::LOG_QUIET.load(Ordering::SeqCst)
     {
-        return;
+        return Ok(());
     }
 
-    const TIME_COLOR: &str = "\x1b[3m\x1b[38;5;52m";
-    const RESET_COLOR: &str = "\x1b[0m";
+    let color = LOG_COLOR
+        .lock()
+        .map_err(|e| anyhow!("{e}"))?
+        .load(Ordering::SeqCst);
 
-    let level_color = match level_color {
-        LOG_TRACE => "\x1b[3m\x1b[38;5;8m",
-        LOG_DEBUG => "\x1b[38;5;20m",
-        LOG_INFO => "\x1b[38;5;114m",
-        LOG_WARNING => "\x1b[38;5;202m",
-        LOG_ERROR | LOG_FATAL => "\x1b[1m\x1b[38;5;202m",
-        _ => "",
-    };
+    let mut out = LOG_OUT.lock().map_err(|e| anyhow!("{e}"))?;
+    if color {
+        const TIME_COLOR: &str = "\x1b[3m\x1b[38;5;52m";
+        const RESET_COLOR: &str = "\x1b[0m";
 
-    eprintln!("{TIME_COLOR}{time_str}{RESET_COLOR}{level_color}{level_str}{RESET_COLOR}{msg}");
+        let level_color = match level_color {
+            LOG_TRACE => "\x1b[3m\x1b[38;5;8m",
+            LOG_DEBUG => "\x1b[38;5;20m",
+            LOG_INFO => "\x1b[38;5;114m",
+            LOG_WARNING => "\x1b[38;5;202m",
+            LOG_ERROR | LOG_FATAL => "\x1b[1m\x1b[38;5;202m",
+            _ => "",
+        };
+
+        writeln!(
+            out,
+            "{TIME_COLOR}{time_str}{RESET_COLOR}{level_color}{level_str}{RESET_COLOR}{msg}"
+        )?;
+    } else {
+        writeln!(out, "{time_str}{level_str}{msg}")?;
+    }
+    Ok(())
 }
 
 fn fatal_delete_instance_folder() -> std::io::Result<()> {

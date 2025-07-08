@@ -2,14 +2,14 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use foximg_color::FoximgColor;
 use raylib::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::Foximg;
+use crate::{foximg_log, Foximg};
 
 mod foximg_color;
 #[cfg(target_os = "windows")]
@@ -193,6 +193,7 @@ where
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct FoximgState {
     pub w: i32,
     pub h: i32,
@@ -261,27 +262,29 @@ impl FoximgConfig for FoximgState {
     }
 }
 
+// #[derive(Serialize, Deserialize)]
+// pub struct FoximgSettings {
+//     pub antialiasing: bool,
+// }
+
+// impl Default for FoximgSettings {
+//     fn default() -> Self {
+//         Self {
+//             antialiasing: false,
+//         }
+//     }
+// }
+
+// impl FoximgConfig for FoximgSettings {
+//     const FILE: &str = "foximg_settings.toml";
+//     const LOCAL: bool = false;
+
+//     fn update(&self, _: &mut RaylibHandle) {}
+// }
+
 #[derive(Serialize, Deserialize)]
-pub struct FoximgSettings {
-    pub antialiasing: bool,
-}
-
-impl Default for FoximgSettings {
-    fn default() -> Self {
-        Self {
-            antialiasing: false,
-        }
-    }
-}
-
-impl FoximgConfig for FoximgSettings {
-    const FILE: &str = "foximg_settings.toml";
-    const LOCAL: bool = false;
-
-    fn update(&self, _: &mut RaylibHandle) {}
-}
-
-#[derive(Serialize, Deserialize)]
+// I intentionally choose not to annotate this with #[serde(default)] because I actually do want the
+// effect of the name and author fields being None when the style is passed by command line arguments.
 pub struct FoximgStyleOptionals {
     pub name: Option<Cow<'static, str>>,
     pub author: Option<Cow<'static, str>>,
@@ -317,12 +320,14 @@ impl Default for FoximgStyleOptionals {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct FoximgStyle {
     #[serde(flatten)]
     pub optionals: FoximgStyleOptionals,
     pub dark: bool,
     pub accent: FoximgColor,
     pub bg: FoximgColor,
+    pub command: FoximgColor,
 }
 
 impl FoximgStyle {
@@ -561,6 +566,7 @@ impl Default for FoximgStyle {
             dark: true,
             accent: FoximgColor(Color::new(245, 213, 246, 127)),
             bg: FoximgColor(Color::new(34, 12, 35, 255)),
+            command: FoximgColor(Color::YELLOW),
             optionals: FoximgStyleOptionals::default(),
         }
     }
@@ -586,8 +592,11 @@ impl Foximg {
         self.state.maximized = self.rl.is_window_maximized();
         self.rl.restore_window();
 
-        self.state.w = self.rl.get_screen_width();
-        self.state.h = self.rl.get_screen_height();
+        if !self.scaleto {
+            self.state.w = self.rl.get_screen_width();
+            self.state.h = self.rl.get_screen_height();
+        }
+        
         self.state.xy = {
             let position = self.rl.get_window_position();
             Some((position.x as i32, position.y as i32))
@@ -599,5 +608,56 @@ impl Foximg {
                 &format!("FOXIMG: Saved state to \"{}\"", FoximgState::FILE),
             );
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FoximgIcon {
+    pub path: Option<PathBuf>,
+}
+
+impl FoximgConfig for FoximgIcon {
+    const FILE: &'static str = "foximg_icon.toml";
+    const LOCAL: bool = true;
+
+    fn update(&self, _: &mut RaylibHandle) {}
+}
+
+impl Default for FoximgIcon {
+    fn default() -> Self {
+        Self { path: Self::find() }
+    }
+}
+
+impl FoximgIcon {
+    fn find() -> Option<PathBuf> {
+        if cfg!(target_os = "windows") {
+            // On Windows, the icon is embedded in the resource file.
+            return None;
+        };
+
+        foximg_log::tracelog(
+            TraceLogLevel::LOG_INFO,
+            "FOXIMG: Searching for \"foximg.png\"",
+        );
+
+        let mut icon_paths: Vec<PathBuf> = vec![];
+        if let Ok(home) = std::env::var("HOME") {
+            icon_paths.push(Path::new(&home).join(".icons/foximg.png"));
+        }
+
+        let data_dirs =
+            std::env::var("XDG_DATA_DIRS").unwrap_or("/usr/local/share/:/usr/share/".to_string());
+
+        for data_dir in data_dirs.split(':') {
+            icon_paths.push(Path::new(data_dir).join("icons/foximg.png"));
+        }
+
+        icon_paths.push("/usr/share/pixmaps/foximg.png".into());
+        icon_paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("share/pixmaps/foximg.png"));
+
+        icon_paths
+            .into_iter()
+            .find(|path| std::fs::exists(path).is_ok_and(|b| b))
     }
 }

@@ -1,18 +1,20 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    fs::{self, File, OpenOptions},
-    io,
-    path::{Path, PathBuf},
-    str::Chars, time::Duration,
+    fs::{self, File, OpenOptions}, io::{self, IsTerminal, Write}, path::{Path, PathBuf}, str::Chars, sync::LazyLock, time::Duration
 };
 
-use config::{FoximgConfig, FoximgSettings, FoximgState, FoximgStyle};
+use aho_corasick::{AhoCorasick, MatchKind};
+use config::{FoximgConfig, FoximgIcon, /* FoximgSettings , */FoximgState, FoximgStyle};
+use foximg_log::FoximgLogOut;
 use images::FoximgImages;
 use menu::FoximgMenu;
 use raylib::prelude::*;
 use resources::FoximgResources;
 
+use crate::images::FoximgImage;
+
+mod cli;
 mod config;
 mod controls;
 mod foximg_log;
@@ -239,8 +241,11 @@ struct FoximgDraw<'a> {
     resources: &'a FoximgResources,
     mouse_wheel: &'a mut f32,
     camera: &'a mut Camera2D,
+    skip_count: &'a str,
+    title: &'a str,
     rl_thread: &'a RaylibThread,
     btn_bounds: FoximgBtnsBounds,
+    scaleto: bool,
 }
 
 impl<'a> FoximgDraw<'a> {
@@ -266,6 +271,46 @@ impl<'a> FoximgDraw<'a> {
         );
     }
 
+    fn draw_fullscreen_title(&mut self) {
+        const FONT_SIZE: f32 = 16.;
+        const FONT_SPACING: f32 = resources::yudit_spacing(FONT_SIZE);
+
+        if !self.state.fullscreen {
+            return;
+        }
+
+        self.d.draw_text_ex(
+            &self.resources.yudit, 
+            self.title, 
+            rvec2(10, 10), 
+            FONT_SIZE, 
+            FONT_SPACING, 
+            self.style.accent
+        );
+    }
+
+    fn draw_skip_count(&mut self, img: &FoximgImage, screen_width: f32, screen_height: f32) {
+        let yudit = &self.resources.yudit;
+        let mut rotation_text_right_offset = 0.;
+
+        if img.rotation() != 0. {
+            rotation_text_right_offset = yudit.measure_text("OOO", resources::SYMBOL_SIDE, 1.).x;
+        }
+
+        let text_width = yudit.measure_text(self.skip_count, resources::SYMBOL_SIDE, 1.).x;
+        self.d.draw_text_ex(
+            yudit,
+            self.skip_count,
+            rvec2(
+                screen_width - text_width - rotation_text_right_offset - (resources::SYMBOL_PADDING * 2.) + resources::TEXT_RIGHT_OFFSET,
+                screen_height - resources::SYMBOL_SIDE - resources::FLIP_OFFSET,
+            ),
+            resources::SYMBOL_SIDE,
+            1.,
+            self.style.command,
+        );
+    }
+
     pub fn draw_current_img(&mut self, images: &mut FoximgImages) {
         let Some(img) = images.img_get(&mut self.d, self.rl_thread) else {
             self.draw_large_centered_text(":(");
@@ -277,7 +322,7 @@ impl<'a> FoximgDraw<'a> {
 
         let screen_width = self.d.get_screen_width().as_f32();
         let screen_height = self.d.get_screen_height().as_f32();
-        let scale = {
+        let scale = if self.scaleto { 1. } else {
             let screen_ratio = screen_width / screen_height;
             let texture_ratio = img.width().as_f32() / img.height().as_f32();
 
@@ -306,27 +351,8 @@ impl<'a> FoximgDraw<'a> {
             screen_height,
         );
 
-        if self.state.fullscreen {
-            const FONT_SIZE: f32 = 16.;
-            const FONT_SPACING: f32 = resources::yudit_spacing(FONT_SIZE);
-
-            self.d.draw_text_ex(
-                &self.resources.yudit, 
-                &images.img_path().to_string_lossy(), 
-                rvec2(10, 10), 
-                FONT_SIZE, 
-                FONT_SPACING, 
-                self.style.accent
-            );
-            self.d.draw_text_ex(
-                &self.resources.yudit, 
-                &images.img_current_string(), 
-                rvec2(10, 10. + FONT_SIZE), 
-                FONT_SIZE, 
-                FONT_SPACING, 
-                self.style.accent
-            );
-        }
+        self.draw_fullscreen_title();
+        self.draw_skip_count(&img, screen_width, screen_height);
     }
 
     fn draw_btns(&mut self, images: &mut FoximgImages) {
@@ -363,7 +389,7 @@ impl<'a> FoximgDraw<'a> {
 
     pub fn begin(
         foximg: &'a mut Foximg,
-        f: impl FnOnce(FoximgDraw<'a>, Option<&'a mut FoximgImages>),
+        f: impl FnOnce(FoximgDraw<'a>, Option<&'a mut Box<FoximgImages>>),
     ) {
         let d = foximg.rl.begin_drawing(&foximg.rl_thread);
         let mut d = Self {
@@ -373,25 +399,46 @@ impl<'a> FoximgDraw<'a> {
             resources: &foximg.resources,
             mouse_wheel: &mut foximg.mouse_wheel,
             camera: &mut foximg.camera,
+            skip_count: &foximg.skip_count,
+            title: &foximg.title,
             rl_thread: &foximg.rl_thread,
             btn_bounds: foximg.btn_bounds,
+            scaleto: foximg.scaleto,
         };
-        d.d.clear_background(foximg.style.bg);
+
+        d.d.clear_background(if foximg.transparent {
+            Color::BLANK
+        } else { 
+            *foximg.style.bg 
+        });
+
+        if let (None | Some(FoximgLock::Images), None) = (foximg.lock, &foximg.images) {
+            d.draw_large_centered_text("drag + drop an image");
+        }
+
         f(d, foximg.images.as_mut());
     }
 }
 
-struct Foximg {
+pub struct Foximg {
     style: FoximgStyle,
     state: FoximgState,
-    settings: FoximgSettings,
+    // settings: FoximgSettings,
     resources: FoximgResources,
-    images: Option<FoximgImages>,
+    images: Option<Box<FoximgImages>>,
 
     mouse_pos: Vector2,
     btn_bounds: FoximgBtnsBounds,
     mouse_wheel: f32,
     camera: Camera2D,
+    skip_count: String,
+
+    lock: Option<FoximgLock>,
+    title_format: String,
+    title: String,
+    transparent: bool,
+    undecorated: bool,
+    scaleto: bool,
 
     rl: RaylibHandle,
     rl_thread: RaylibThread,
@@ -399,48 +446,79 @@ struct Foximg {
 }
 
 impl Foximg {
-    pub const TITLE: &str = if cfg!(debug_assertions) {
-        concat!("foximg ", env!("CARGO_PKG_VERSION"), " [DEBUG BUILD]")
-    } else {
-        concat!("foximg ", env!("CARGO_PKG_VERSION"))
-    };
-
-    pub fn init(verbose: bool) -> Self {
+    pub fn init(args: &mut FoximgArgs) -> Self {
         // SAFETY: As of raylib-rs 5.5.1, this always returns Ok.
         callbacks::set_trace_log_callback(foximg_log::tracelog).unwrap();
 
-        let (mut rl, rl_thread) = raylib::init()
-            .vsync()
-            .resizable()
-            .title(Self::TITLE)
-            .log_level(if verbose {
+        let default_format = if args.lock.is_none() {
+            "foximg %v%! \n[%u of %l] - %f"
+        } else {
+            "foximg %v%! \n- %f"
+        };
+
+        let title_format = args.title.unwrap_or(default_format).to_string();
+        let mut rl_builder = raylib::init();
+        rl_builder.vsync()
+            .log_level(if args.verbose {
                 TraceLogLevel::LOG_ALL
             } else {
                 TraceLogLevel::LOG_INFO
-            })
-            .build();
+            });
 
+        if args.transparent {
+            rl_builder.transparent();
+        }
+            
+        if args.undecorated {
+            rl_builder.undecorated();
+        }
+
+        if !args.scaleto {
+            rl_builder.resizable();
+        }
+
+        let (mut rl, rl_thread) = rl_builder.build();
+        rl.set_window_state(rl.get_window_state().set_window_topmost(args.ontop));
         rl.set_exit_key(None);
         rl.set_target_fps(60);
 
-        let instance = FoximgInstance::new(&mut rl);
+        let title = self::format_title(&mut rl, &rl_thread, &title_format, None);
+        rl.set_window_title(&rl_thread, &title);
+
+        // We don't remember state if it's manually overriden using arguments.
+        let instance = if args.state.is_some() {
+            None
+        } else {
+            FoximgInstance::new(&mut rl)
+        };
 
         // Style must be initialized before state because on Windows the titlebar's color gets updated
         // only once it's resized. The window can't get resized if it's already maximized, so the
         // window appears in light mode on startup otherwise.
-        let style = FoximgStyle::new(&mut rl);
+        let style = args.style.take()
+            .inspect(|style| {
+                rl.trace_log(TraceLogLevel::LOG_INFO, "Loaded style from arguments:");
+                style.update(&mut rl);
+            })
+            .unwrap_or_else(|| FoximgStyle::new(&mut rl));
+
         let state = if instance
             .as_ref()
             .is_some_and(|instance| matches!(instance.owner(), Ok(true)))
         {
             FoximgState::new(&mut rl)
         } else {
-            FoximgState::default()
+            args.state.take().inspect(|state| {
+                rl.trace_log(TraceLogLevel::LOG_INFO, "Loaded state from arguments:");
+                state.update(&mut rl);
+            }).unwrap_or_default()
         };
 
-        let settings = FoximgSettings::new(&mut rl);
+        // let settings = FoximgSettings::new(&mut rl);
         let resources = FoximgResources::new(&mut rl, &rl_thread);
+        let icon = FoximgIcon::new(&mut rl);
 
+        images::set_window_icon(&mut rl, &style, icon);
         rl.trace_log(
             TraceLogLevel::LOG_INFO,
             "FOXIMG: Foximg initialized successfully",
@@ -455,10 +533,17 @@ impl Foximg {
                 zoom: 1.,
                 ..Default::default()
             },
+            skip_count: String::new(),
+            lock: args.lock,
+            transparent: args.transparent,
+            undecorated: args.undecorated,
+            scaleto: args.scaleto,
             state,
-            settings,
+            // settings,
             style,
             resources,
+            title_format,
+            title,
             rl,
             rl_thread,
             instance,
@@ -466,18 +551,11 @@ impl Foximg {
     }
 
     fn toggle_fullscreen(&mut self) {
-        if self.rl.is_key_pressed(KeyboardKey::KEY_F11) {
-            self.state.fullscreen = !self.state.fullscreen;
-            self.rl.toggle_borderless_windowed();
-        }
-    }
+        self.state.fullscreen = !self.state.fullscreen;
+        self.rl.toggle_borderless_windowed();
 
-    fn create_tracelog_file(&self) {
-        if (self.rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) 
-            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL)) 
-            && self.rl.is_key_pressed(KeyboardKey::KEY_L) 
-        {
-            foximg_log::create_file();
+        if self.undecorated && !self.state.fullscreen {
+            self.rl.set_window_state(self.rl.get_window_state().set_window_undecorated(true));
         }
     }
 
@@ -486,8 +564,10 @@ impl Foximg {
             instsance.update(&self.rl);
         }
 
-        self.toggle_fullscreen();
-        self.create_tracelog_file();
+        if self.rl.is_key_pressed(KeyboardKey::KEY_F11) {
+            self.toggle_fullscreen();
+        }
+
         self.mouse_pos = self.rl.get_mouse_position();
     }
 
@@ -528,11 +608,21 @@ impl Foximg {
             Foximg::rotate_n90_img,
             Foximg::rotate_90_img,
             Foximg::update_gallery,
+            Foximg::jump_to,
+            Foximg::delete_skip,
+            Foximg::escape_skip,
+            Foximg::jump_to_end,
+            Foximg::skip_images,
+            Foximg::jump_to_start,
         ];
 
         POLL_IMG_EVENTS.iter().find(|event| event(self));
         self.zoom_scroll_img();
         self.pan_img();
+        self.pan_img_up();
+        self.pan_img_down();
+        self.pan_img_left();
+        self.pan_img_right();
     }
 
     pub fn run(mut self, path: Option<&str>) {
@@ -543,17 +633,19 @@ impl Foximg {
         while !self.rl.window_should_close() {
             self.update();
             self.btn_bounds = FoximgBtnsBounds::new(&self.rl, self.mouse_pos);
-            self.get_dropped_img();
-            self.update_mouse_cursor();
-            self.manipulate_img();
-
-            if self
-                .rl
-                .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
-            {
-                let keep_running = FoximgMenu::init(&mut self).run();
-                if !keep_running {
-                    return;
+            if let None | Some(FoximgLock::Images) = self.lock {
+                self.get_dropped_img();
+                self.update_mouse_cursor();
+                self.manipulate_img();
+    
+                if self
+                    .rl
+                    .is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
+                {
+                    let keep_running = FoximgMenu::init(&mut self).run();
+                    if !keep_running {
+                        return;
+                    }
                 }
             }
 
@@ -561,11 +653,30 @@ impl Foximg {
                 if let Some(images) = images {
                     d.draw_current_img(images);
                     d.draw_btns(images);
-                } else {
-                    d.draw_large_centered_text("drag + drop an image");
                 }
             });
         }
+    }
+
+    /// Do something mutably with the current images. Calls the closure only if theres images loaded.
+    /// Use this only if you don't care about handling what happens when theres no images loaded, and
+    /// when otherwise using regular `if let Some(ref mut images) = f {...}` syntax would cause borrow
+    /// checker issues: 
+    /// 
+    /// The function temporarily takes ownership of the `Box<FoximgImages>` and then returns it to 
+    /// `self`. Thus, inside the closure, `f.images` will always be `None`.
+    pub fn images_with<F>(&mut self, f: F) 
+    where 
+        F: FnOnce(&mut Self, &mut FoximgImages) 
+    {
+        let mut local_images = None;
+        std::mem::swap(&mut local_images, &mut self.images);
+
+        if let Some(ref mut images) = local_images {
+            f(self, images)
+        }
+
+        std::mem::swap(&mut local_images, &mut self.images);
     }
 }
 
@@ -589,85 +700,277 @@ impl Drop for Foximg {
     }
 }
 
-struct FoximgArgs<'a> {
+pub fn format_title(
+    rl: &mut RaylibHandle,
+    rl_thread: &RaylibThread,
+    title: &str,
+    mut images: Option<&mut FoximgImages>,
+) -> String {
+    const PATTERN_PATH: usize = 0;
+    const PATTERN_HEIGHT: usize = 1;
+    const PATTERN_NAME: usize = 2;
+    const PATTERN_IMAGES_LEN: usize = 3;
+    const PATTERN_IMAGES_CURRENT: usize = 4;
+    const PATTERN_WIDTH: usize = 5;
+    const PATTERNS_LEN: usize = 8;
+
+    static AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
+        static TITLE_PATTERNS: [&str; PATTERNS_LEN] = ["%f", "%h", "%n", "%l", "%u", "%w", "%v", "\\%"];
+
+        AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostFirst)
+            .build(TITLE_PATTERNS)
+            .unwrap()
+    });
+
+    let mut replace_with: [String; PATTERNS_LEN] = [
+        String::new(),
+        "0".into(),
+        String::new(),
+        "0".into(),
+        "0".into(),
+        "0".into(),
+        if cfg!(debug_assertions) {
+            concat!(env!("CARGO_PKG_VERSION"), " [DEBUG BUILD]")
+        } else {
+            env!("CARGO_PKG_VERSION")
+        }.into(),
+        "%".into(),
+    ];
+
+    if let Some(ref mut images) = images {
+        let path = images.img_path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        replace_with[PATTERN_PATH] = path.display().to_string();
+        replace_with[PATTERN_NAME] = name;
+        replace_with[PATTERN_IMAGES_LEN] = images.len().to_string();
+        replace_with[PATTERN_IMAGES_CURRENT] = images.img_current().to_string();
+        images.img_with(rl, rl_thread, |img| {
+            replace_with[PATTERN_HEIGHT] = img.height().to_string();
+            replace_with[PATTERN_WIDTH] = img.width().to_string();
+        });
+    }
+
+    let title = AC.replace_all(title, &replace_with);
+    title
+        .split("%!")
+        .enumerate()
+        .filter(|(i, _)| images.is_some() || i % 2 == 0)
+        .map(|(_, title)| title)
+        .collect::<Vec<_>>()
+        .concat()
+}
+
+#[derive(Clone, Copy)]
+enum FoximgInfoLanguage {
+    Toml,
+    Json,
+}
+
+enum FoximgMode {
+    Help(Option<anyhow::Error>),
+    Info(FoximgInfoLanguage),
+    Version,
+    Normal,
+}
+
+#[derive(Clone, Copy)]
+pub enum FoximgLock {
+    Images,
+    Ui,
+}
+
+pub struct FoximgArgs<'a> {
+    mode: FoximgMode,
+
+    lock: Option<FoximgLock>,
+    quiet: bool,
+    scaleto: bool,
+    state: Option<FoximgState>,
+    style: Option<FoximgStyle>,
+    title: Option<&'a str>,
+    transparent: bool,
+    undecorated: bool,
+    ontop: bool,
     verbose: bool,
     path: Option<&'a str>,
 }
 
-impl<'a> FoximgArgs<'a> {
-    pub fn new() -> Self {
+impl Default for FoximgArgs<'_> {
+    fn default() -> Self {
         Self {
+            mode: FoximgMode::Normal,
+            lock: None,
+            quiet: false,
+            scaleto: false,
+            state: None,
+            style: None,
+            title: None,
+            transparent: false,
+            undecorated: false,
+            ontop: false,
             verbose: cfg!(debug_assertions),
             path: None,
         }
     }
+}
 
-    fn run(self) {
-        let foximg = Foximg::init(self.verbose);
-        foximg.run(self.path);
-
-        foximg_log::tracelog(
-            TraceLogLevel::LOG_INFO,
-            "FOXIMG: Foximg uninitialized successfully. Goodbye!",
-        );
+impl<'a> FoximgArgs<'a> {
+    fn set_lock(&mut self) {
+        if self.lock.is_none() {
+            self.lock = Some(FoximgLock::Images);
+        } else {
+            self.lock = Some(FoximgLock::Ui);
+        }
     }
 
-    fn parse_option(&mut self, arg: Chars) -> bool {
+    fn parse_long_option(&mut self, arg: &'a str) -> Result<(), Option<anyhow::Error>> {
+        if arg == "--help" {
+            return Err(None);
+        } else if arg == "--info" {
+            self.mode = FoximgMode::Info(FoximgInfoLanguage::Toml);
+        } else if arg == "--json" {
+            self.mode = FoximgMode::Info(FoximgInfoLanguage::Json);
+        } else if arg == "--lock" {
+            self.set_lock();
+        } else if arg == "--quiet" {
+            self.quiet = true;
+        } else if arg == "--scaleto" {
+            self.scaleto = true;
+        } else if let Some(state) = arg.strip_prefix("--state") {
+            return self::parse_option_with_arg(arg, state, |state| {
+                self::parse_toml_arg(&mut self.state, state)
+            });
+        } else if let Some(style) = arg.strip_prefix("--style") {
+            return self::parse_option_with_arg(arg, style, |style| {
+                self::parse_toml_arg(&mut self.style, style)
+            });
+        } else if let Some(title) = arg.strip_prefix("--title") {
+            return self::parse_option_with_arg(arg, title, |title| {
+                self.title = Some(title);
+                Ok(())
+            });
+        } else if arg == "--transparent" {
+            self.transparent = true;
+        } else if arg == "--undecorated" {
+            self.undecorated = true;
+        } else if arg == "--ontop" {
+            self.ontop = true;
+        } else if arg == "--verbose" {
+            self.verbose = true;
+        } else if arg == "--version" {
+            self.mode = FoximgMode::Version;
+        } else {
+            return Err(Some(anyhow::anyhow!("Unknown option \"{arg}\"")));
+        }
+        Ok(())
+    }
+
+    fn parse_short_option(&mut self, arg: Chars) -> Result<(), Option<anyhow::Error>> {
         for c in arg {
-            if c == 'q' {
-                foximg_log::quiet(true);
+            if c == 'h' {
+                return Err(None);
+            } else if c == 'i' {
+                self.mode = FoximgMode::Info(FoximgInfoLanguage::Toml);
+            } else if c == 'l' {
+                self.set_lock();
+            } else if c == 'q' {
+                self.quiet = true;
+            } else if c == 's' {
+                self.scaleto = true;
             } else if c == 'v' {
                 self.verbose = true;
             } else {
-                return false;
-            }
+                return Err(Some(anyhow::anyhow!("Unknown option \"-{c}\"")));
+            } 
         }
-        true
+        Ok(())
     }
 
-    pub fn parse_args(mut self, args: &'a [String]) {
+    pub fn parse_args(mut self, args: &'a [String]) -> Box<dyn FnOnce() + 'a> {
         let mut args = args.iter();
         // First argument always is the application path.
         args.next();
 
         while let Some(arg) = args.next().map(|arg| arg.as_str()) {
-            if arg == "--help" {
-                return self::help();
-            } else if arg == "--quiet" {
-                foximg_log::quiet(true);
-            } else if arg == "--verbose" {
-                self.verbose = true;
-            } else if arg.chars().nth(0) == Some('-') {
-                let arg = arg[1..].chars();
-                if !self.parse_option(arg) {
-                    return self::help();
+            let is_short_option = arg.chars().nth(0) == Some('-') 
+                && arg.chars().nth(1) != Some('-');
+
+            let is_long_option = arg.chars().nth(0) == Some('-') 
+                && arg.chars().nth(1) == Some('-');
+
+            if is_long_option {
+                if let Err(e) = self.parse_long_option(arg) {
+                    self.mode = FoximgMode::Help(e);
                 }
-            } else if self.path.is_none() {
+            } else if is_short_option {
+                let arg = arg[1..].chars();
+                if let Err(e) = self.parse_short_option(arg) {
+                    self.mode = FoximgMode::Help(e);
+                }
+            } else if self.path.is_none() && !is_short_option && !is_long_option {
                 self.path = Some(arg);
-            } else {
-                return self::help();
+                break;
             }
         }
 
-        self.run();
+        match self.mode {
+            FoximgMode::Help(e) => Box::new(|| self::help(e)),
+            FoximgMode::Info(language) => Box::new(move || cli::run(self, language)),
+            FoximgMode::Normal => Box::new(|| self::run(self)),
+            FoximgMode::Version => Box::new(self::version),
+        }
     }
 }
 
-fn help() {
-    const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
-    const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
-    const GRAY_COLOR: &str = "\x1b[3m\x1b[38;5;8m";
-    const GREEN_COLOR: &str = "\x1b[38;5;114m";
-    const RESET_COLOR: &str = "\x1b[0m";
-    const PINK_COLOR: &str = "\x1b[1m\x1b[38;5;219m";
+fn parse_option_with_arg<'a, F>(
+    option: &str, 
+    option_arg: &'a str,
+    f: F,
+) -> Result<(), Option<anyhow::Error>>
+where 
+    F: FnOnce(&'a str) -> Result<(), Option<anyhow::Error>>,
+{
+    if option_arg.is_empty() {
+        return Err(Some(anyhow::anyhow!("\"{option}\" must have an argument")));
+    } else if !option_arg.starts_with('=') {
+        return Err(Some(anyhow::anyhow!("Unknown option \"{option}\"")));
+    }
 
-    eprintln!("{PINK_COLOR}foximg {FOXIMG_VERSION}:{RESET_COLOR} {FOXIMG_DESCRIPTION}\n");
-    eprintln!("{GREEN_COLOR}Usage:{RESET_COLOR}");
-    eprintln!("    foximg {GRAY_COLOR}[OPTION...] [PATH]{RESET_COLOR}");
-    eprintln!("{GREEN_COLOR}Options:{RESET_COLOR}");
-    eprintln!("    {GRAY_COLOR}-h, --help     {RESET_COLOR}Print help");
-    eprintln!("    {GRAY_COLOR}-q, --quiet    {RESET_COLOR}Don't print log messages");
-    eprintln!("    {GRAY_COLOR}-v, --verbose  {RESET_COLOR}Make TRACE and DEBUG log messages");
+    let option_arg = &option_arg[1..];
+    f(option_arg)
+}
+
+fn parse_toml_arg<T>(arg: &mut Option<T>, toml: &str) -> Result<(), Option<anyhow::Error>>
+where 
+    T: for<'de> serde::Deserialize<'de>
+{
+    const MAX_DEPTH: i32 = 2;
+
+    let mut depth = 0;
+    let mut toml = toml.replace(';', "\n");
+    loop {
+        depth += 1;
+        if depth > MAX_DEPTH {
+            return Err(Some(anyhow::anyhow!("Reached max depth when parsing TOML file")));
+        }
+
+        match toml::from_str(&toml) {
+            Ok(state) => *arg = Some(state),
+            _ if Path::new(&toml).exists() => {
+                toml = fs::read_to_string(toml).unwrap();
+                continue;
+            },
+            Err(e) => return Err(Some(e.into())),
+        };
+                    
+        break Ok(());
+    }
 }
 
 fn main() {
@@ -683,7 +986,7 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    FoximgArgs::new().parse_args(&args);
+    FoximgArgs::default().parse_args(&args)()
 }
 
 #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -703,4 +1006,93 @@ fn set_vt() -> windows::core::Result<()> {
         SetConsoleMode(hout, mode)?;
     }
     Ok(())
+}
+
+fn stdout_error(what: &str, e: io::Error) {
+    const ERROR_COLOR: &str = "\x1b[1m\x1b[38;5;202m";
+    const RESET_COLOR: &str = "\x1b[0m";
+
+    eprintln!("{ERROR_COLOR}ERROR: {RESET_COLOR}Printing {what} to stdout failed: {e}");
+}
+
+fn help(e: Option<anyhow::Error>) {
+    if let Err(e) = self::try_help(e) {
+        self::stdout_error("help", e);
+    }
+}
+
+fn try_help(e: Option<anyhow::Error>) -> io::Result<()> {
+    const FOXIMG_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const FOXIMG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+
+    let mut error_color = String::new();
+    let mut gray_color = String::new();
+    let mut green_color = String::new();
+    let mut reset_color = String::new();
+    let mut pink_color = String::new();
+    let mut out = std::io::stdout();
+
+    if out.is_terminal() {
+        error_color = "\x1b[1m\x1b[38;5;202m".into();
+        gray_color = "\x1b[3m\x1b[38;5;8m".into();
+        green_color = "\x1b[38;5;114m".into();
+        reset_color = "\x1b[0m".into();
+        pink_color = "\x1b[1m\x1b[38;5;219m".into();
+    }
+
+    if let Some(e) = e {
+        writeln!(out, "{error_color}ERROR: {reset_color}{e}\n")?;
+        writeln!(out, "Use \"foximg -h\" or \"foximg --help\" to see all the available options.")?;
+        return Ok(());
+    }
+
+    writeln!(out, "{pink_color}foximg {FOXIMG_VERSION}:{reset_color} {FOXIMG_DESCRIPTION}\n")?;
+    writeln!(out, "{green_color}Usage:{reset_color}")?;
+    writeln!(out, "    foximg {gray_color}[OPTION...] [PATH]{reset_color}")?;
+    writeln!(out, "{green_color}Options:{reset_color}")?;
+    writeln!(out, "    {gray_color}-h, --help          {reset_color}Print help")?;
+    writeln!(out, "    {gray_color}-i, --info          {reset_color}Print info about input image as TOML")?;
+    writeln!(out, "    {gray_color}    --json          {reset_color}Print info about input image as JSON")?;
+    writeln!(out, "    {gray_color}-l, --lock          {reset_color}Show only the input image. Use -ll to lock the UI as well")?;
+    writeln!(out, "    {gray_color}-q, --quiet         {reset_color}Don't print log messages. Don't print EXIF metadata with -i")?;
+    writeln!(out, "    {gray_color}-s, --scaleto       {reset_color}Scale window to the size of the current image")?;
+    writeln!(out, "    {gray_color}    --state=TOML    {reset_color}Set window's state according to the format in foximg_state.toml")?;
+    writeln!(out, "    {gray_color}    --style=TOML    {reset_color}Set window's style according to the format in foximg_style.toml")?;
+    writeln!(out, "    {gray_color}    --title=FORMAT  {reset_color}Set window's title")?;
+    writeln!(out, "    {gray_color}    --transparent   {reset_color}Set window to be transparent")?;
+    writeln!(out, "    {gray_color}    --undecorated   {reset_color}Set window to not have a border")?;
+    writeln!(out, "    {gray_color}    --ontop         {reset_color}Set window always on top")?;
+    writeln!(out, "    {gray_color}-v, --verbose       {reset_color}Make TRACE and DEBUG log messages")?;
+    writeln!(out, "    {gray_color}    --version       {reset_color}Print foximg's version")?;
+    writeln!(out, "\n{green_color}TOML:{reset_color}")?;
+    writeln!(out, "    Use either a TOML document with newlines substituted by semicolons, or a path to a TOML document.")?;
+    writeln!(out, "\n{green_color}FORMAT specifiers:{reset_color}")?;
+    writeln!(out, "    {gray_color}%f  {reset_color}Current image's path")?;
+    writeln!(out, "    {gray_color}%h  {reset_color}Current image's height")?;
+    writeln!(out, "    {gray_color}%n  {reset_color}Current image's name")?;
+    writeln!(out, "    {gray_color}%l  {reset_color}Number of images loaded")?;
+    writeln!(out, "    {gray_color}%u  {reset_color}Current image's number")?;
+    writeln!(out, "    {gray_color}%w  {reset_color}Current image's width")?;
+    writeln!(out, "    {gray_color}%v  {reset_color}foximg's version")?;
+    writeln!(out, "    {gray_color}%!  {reset_color}If no images, omit the text on the right side until another {gray_color}%!{reset_color} or end of text")?;
+    Ok(())
+}
+
+fn run(mut args: FoximgArgs) {
+    foximg_log::quiet(args.quiet);
+    foximg_log::out(FoximgLogOut::Stdout(std::io::stdout()));
+
+    let foximg = Foximg::init(&mut args);
+    foximg.run(args.path);
+    foximg_log::tracelog(
+        TraceLogLevel::LOG_INFO,
+        "FOXIMG: Foximg uninitialized successfully. Goodbye!",
+    );
+}
+
+fn version() {
+    let out = std::io::stdout();
+    if let Err(e) = writeln!(&out, "{}", env!("CARGO_PKG_VERSION")) {
+        self::stdout_error("version", e);
+    }
 }

@@ -1,7 +1,6 @@
 use std::{
     cell::{RefCell, RefMut},
     ffi::c_void,
-    fmt::Display,
     fs::ReadDir,
     mem::ManuallyDrop,
     num::NonZeroU32,
@@ -11,60 +10,18 @@ use std::{
 
 use circular_buffer::CircularBuffer;
 use foximg_image_loader::FoximgImageLoader;
-use image::{EncodableLayout, Frame, Frames, ImageResult};
+use image::{EncodableLayout, Frame, Frames, ImageResult, foximg::AnimationLoops};
 use raylib::prelude::*;
 
-use crate::{Foximg, config::FoximgStyle, resources::FoximgResources};
+use crate::{
+    Foximg,
+    config::FoximgStyle,
+    resources::{self, FoximgResources},
+};
 
-mod foximg_gif_decoder;
 mod foximg_image_loader;
-mod foximg_png_decoder;
-mod foximg_webp_decoder;
 
-pub use foximg_image_loader::new_resource;
-
-/// Number of repetitions in an animated image.
-#[derive(Copy, Clone)]
-enum AnimationLoops {
-    /// Finite number of repetitions
-    Finite(NonZeroU32),
-    /// Infinite number of repetitions
-    Infinite,
-}
-
-impl Display for AnimationLoops {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AnimationLoops::Finite(i) => write!(f, "{i}"),
-            AnimationLoops::Infinite => write!(f, "infinite"),
-        }
-    }
-}
-
-impl From<image_webp::LoopCount> for AnimationLoops {
-    fn from(value: image_webp::LoopCount) -> Self {
-        match value {
-            image_webp::LoopCount::Times(i) => Self::Finite(i.into()),
-            image_webp::LoopCount::Forever => Self::Infinite,
-        }
-    }
-}
-
-impl From<gif::Repeat> for AnimationLoops {
-    fn from(value: gif::Repeat) -> Self {
-        match value {
-            gif::Repeat::Finite(0) => Self::Finite(NonZeroU32::new(1).unwrap()),
-            gif::Repeat::Finite(i) => Self::Finite(NonZeroU32::new(i as u32).unwrap()),
-            gif::Repeat::Infinite => Self::Infinite,
-        }
-    }
-}
-
-/// Trait for animated image decoders that can get how many times the animation iterates.
-trait AnimationLoopsDecoder {
-    /// Returns how many times the decoded animation iterates.
-    fn get_loop_count(&self) -> AnimationLoops;
-}
+pub use foximg_image_loader::{new_resource, set_window_icon};
 
 struct FoximgImageAnimated {
     frames: Vec<Frame>,
@@ -195,9 +152,13 @@ impl FoximgImage {
         self.texture.height()
     }
 
+    pub fn rotation(&self) -> f32 {
+        self.rotation
+    }
+
     pub fn draw_center_scaled(
         &self,
-        d: &mut impl RaylibDraw,
+        d: &mut RaylibDrawHandle,
         screen_width: f32,
         screen_height: f32,
         scale: f32,
@@ -239,9 +200,6 @@ impl FoximgImage {
         screen_width: f32,
         screen_height: f32,
     ) {
-        const SYMBOL_SIDE: i32 = 64;
-        const SYMBOL_PADDING: i32 = 10;
-
         let flipped_horizontal = self.width_mult == -1;
         let flipped_vertical = self.height_mult == -1;
         let flip = &resources.flip;
@@ -250,7 +208,10 @@ impl FoximgImage {
         if flipped_horizontal {
             d.draw_texture_ex(
                 flip,
-                rvec2(SYMBOL_PADDING, screen_height - SYMBOL_PADDING as f32),
+                rvec2(
+                    resources::SYMBOL_PADDING,
+                    screen_height - resources::SYMBOL_PADDING,
+                ),
                 -90.,
                 1.,
                 accent,
@@ -260,33 +221,29 @@ impl FoximgImage {
             d.draw_texture(
                 flip,
                 if flipped_horizontal {
-                    SYMBOL_PADDING * 2 + SYMBOL_SIDE
+                    resources::SYMBOL_PADDING * 2. + resources::SYMBOL_SIDE
                 } else {
-                    SYMBOL_PADDING
-                },
-                screen_height as i32 - SYMBOL_SIDE - SYMBOL_PADDING,
+                    resources::SYMBOL_PADDING
+                } as i32,
+                (screen_height - resources::SYMBOL_SIDE - resources::SYMBOL_PADDING) as i32,
                 accent,
             );
         }
 
-        /// The width of the whitespace pixels on the right side of the yudit 0.
-        const TEXT_RIGHT_OFFSET: f32 = 9.;
-        /// The width of the whitespace pixels around each side of the flip texture.
-        const FLIP_OFFSET: f32 = 2.;
-
         if self.rotation != 0. {
             let text = self.rotation.to_string();
             let yudit = &resources.yudit;
-            let text_width = yudit.measure_text(&text, SYMBOL_SIDE as f32, 1.).x;
+            let text_width = yudit.measure_text(&text, resources::SYMBOL_SIDE, 1.).x;
 
             d.draw_text_ex(
                 yudit,
                 &text,
                 rvec2(
-                    screen_width - text_width - (SYMBOL_PADDING * 2) as f32 + TEXT_RIGHT_OFFSET,
-                    screen_height - SYMBOL_SIDE as f32 - FLIP_OFFSET,
+                    screen_width - text_width - resources::SYMBOL_PADDING * 2.
+                        + resources::TEXT_RIGHT_OFFSET,
+                    screen_height - resources::SYMBOL_SIDE - resources::FLIP_OFFSET,
                 ),
-                SYMBOL_SIDE as f32,
+                resources::SYMBOL_SIDE,
                 1.,
                 accent,
             );
@@ -389,32 +346,52 @@ impl FoximgImages {
         self.current > 0
     }
 
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn img_current(&self) -> usize {
+        self.current + 1
+    }
+
     pub fn img_current_string(&self) -> String {
-        format!("[{} of {}]", self.current + 1, self.paths.len())
+        format!("[{} of {}]", self.img_current(), self.len())
     }
 
-    pub fn update_titlebar_and_log(
-        &self,
-        rl: &mut RaylibHandle,
-        rl_thread: &RaylibThread,
-        path: &Path,
-    ) {
-        let title = format!("{} {} - {path:?}", Foximg::TITLE, self.img_current_string());
-        rl.set_window_title(rl_thread, &title);
-        rl.trace_log(TraceLogLevel::LOG_INFO, &format!("FOXIMG: {path:?} opened"));
+    pub fn set_current(&mut self, c: usize) {
+        self.current = c;
     }
 
-    pub fn inc(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread) {
-        if self.can_inc() {
-            self.current += 1;
-            self.update_titlebar_and_log(rl, rl_thread, self.img_path());
+    pub fn update_window(&mut self, f: &mut Foximg) {
+        f.title = crate::format_title(&mut f.rl, &f.rl_thread, &f.title_format, Some(self));
+        f.rl.set_window_title(&f.rl_thread, &f.title.replace('\n', ""));
+        f.rl.trace_log(
+            TraceLogLevel::LOG_INFO,
+            &format!("FOXIMG: {:?} opened", self.img_path()),
+        );
+
+        if f.scaleto {
+            let Some(img) = self.img_get(&mut f.rl, &f.rl_thread) else {
+                return;
+            };
+
+            let img = img.borrow();
+            f.rl.set_window_size(img.width(), img.height());
         }
     }
 
-    pub fn dec(&mut self, rl: &mut RaylibHandle, rl_thread: &RaylibThread) {
+    pub fn inc(&mut self, f: &mut Foximg, amount: usize) {
+        if self.can_inc() {
+            self.current += amount;
+            self.current = self.current.clamp(0, self.len() - 1);
+            self.update_window(f);
+        }
+    }
+
+    pub fn dec(&mut self, f: &mut Foximg, amount: usize) {
         if self.can_dec() {
-            self.current -= 1;
-            self.update_titlebar_and_log(rl, rl_thread, self.img_path());
+            self.current = self.current.saturating_sub(amount);
+            self.update_window(f);
         }
     }
 
@@ -464,6 +441,8 @@ impl FoximgImages {
     }
 }
 
+type FoximgFolderIter = Box<dyn Iterator<Item = Result<PathBuf, Option<std::io::Error>>>>;
+
 /// Intermediate struct that helps with loading folders into Foximg galleries.
 struct FoximgFolder<'a> {
     f: &'a mut Foximg,
@@ -488,7 +467,7 @@ impl<'a> FoximgFolder<'a> {
         }
     }
 
-    fn skip_reread(&mut self) -> Option<FoximgImages> {
+    fn skip_reread(&mut self) -> Option<Box<FoximgImages>> {
         if let Some(ref mut images) = self.f.images {
             if self.folder.is_some()
                 && images.paths.first().and_then(|path| path.parent()) == self.folder
@@ -521,14 +500,6 @@ impl<'a> FoximgFolder<'a> {
         None
     }
 
-    /// Creates an iterator over `folder` if it's `Some` or if it's accessible.
-    fn get_folder_iter(&self) -> anyhow::Result<ReadDir> {
-        self.folder.map_or_else(
-            || Err(anyhow::anyhow!("File does not have a directory",)),
-            |folder| folder.read_dir().map_err(anyhow::Error::from),
-        )
-    }
-
     /// Push a valid image and increment `i`.
     fn push_img(&mut self, i: &mut usize, current_path: PathBuf, loader: FoximgImageLoader) {
         if current_path == self.path {
@@ -541,41 +512,22 @@ impl<'a> FoximgFolder<'a> {
     }
 
     /// Iterates through the folder and pushes any images it can. Returns how many images it pushed.
-    fn push_images(&mut self, folder_iter: ReadDir) -> usize {
+    fn push_images(&mut self, iter: FoximgFolderIter) -> usize {
         let mut i = 0;
-        for file in folder_iter {
-            let file = match file {
-                Ok(file) => file,
+        for current_path in iter {
+            let current_path = match current_path {
+                Ok(current_path) => current_path,
                 Err(e) => {
-                    self.f
-                        .rl
-                        .trace_log(TraceLogLevel::LOG_WARNING, "FOXIMG: Couldn't open file:");
-                    self.f
-                        .rl
-                        .trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
+                    if let Some(e) = e {
+                        self.f.rl.trace_log(
+                            TraceLogLevel::LOG_WARNING,
+                            &format!("FOXIMG: Failed to load file: {e}"),
+                        );
+                    }
                     continue;
                 }
             };
 
-            let file_type = match file.file_type() {
-                Ok(file_type) => file_type,
-                Err(e) => {
-                    self.f.rl.trace_log(
-                        TraceLogLevel::LOG_WARNING,
-                        "FOXIMG: Couldn't get file type:",
-                    );
-                    self.f
-                        .rl
-                        .trace_log(TraceLogLevel::LOG_WARNING, &format!("    > {e}"));
-                    continue;
-                }
-            };
-
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let current_path = file.path();
             let Some(ext) = current_path.extension() else {
                 continue;
             };
@@ -624,14 +576,12 @@ impl<'a> FoximgFolder<'a> {
     /// - `path` doesn't lie inside a directory
     /// - An IO error
     /// - The folder doesn't have any valid images.
-    pub fn load(mut self) -> anyhow::Result<FoximgImages> {
+    pub fn load(mut self, iter: FoximgFolderIter) -> anyhow::Result<Box<FoximgImages>> {
         if let Some(images) = self.skip_reread() {
             return Ok(images);
         }
 
-        let folder_iter = self.get_folder_iter()?;
-        let i = self.push_images(folder_iter);
-
+        let i = self.push_images(iter);
         if i > 0 {
             let current = self
                 .current
@@ -646,7 +596,7 @@ impl<'a> FoximgFolder<'a> {
                     self.folder.unwrap_or(Path::new(""))
                 ),
             );
-            Ok(images)
+            Ok(Box::new(images))
         } else {
             Err(anyhow::anyhow!("No images could be loaded from the folder"))
         }
@@ -654,11 +604,48 @@ impl<'a> FoximgFolder<'a> {
 }
 
 impl Foximg {
+    fn get_path_iter(&self, path: &Path) -> anyhow::Result<FoximgFolderIter> {
+        if self.lock.is_some() {
+            Ok(Box::new([Ok(path.to_path_buf())].into_iter()))
+        } else {
+            struct FolderIter(ReadDir);
+            impl Iterator for FolderIter {
+                type Item = Result<PathBuf, Option<std::io::Error>>;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    let file = self.0.next()?;
+                    let file = match file {
+                        Ok(file) => file,
+                        Err(e) => return Some(Err(Some(e))),
+                    };
+
+                    let file_type = match file.file_type() {
+                        Ok(file_type) => file_type,
+                        Err(e) => return Some(Err(Some(e))),
+                    };
+
+                    if !file_type.is_file() {
+                        Some(Err(None))
+                    } else {
+                        Some(Ok(file.path()))
+                    }
+                }
+            }
+
+            Ok(Box::new(FolderIter(
+                path.parent()
+                    .ok_or_else(|| anyhow::anyhow!("File does not have a directory",))?
+                    .read_dir()?,
+            )))
+        }
+    }
+
     fn try_load_folder(&mut self, path: &Path) -> anyhow::Result<()> {
         let path = path.canonicalize()?;
-        let images = FoximgFolder::new(self, &path).load()?;
+        let iter = self.get_path_iter(&path)?;
+        let mut images = FoximgFolder::new(self, &path).load(iter)?;
 
-        images.update_titlebar_and_log(&mut self.rl, &self.rl_thread, images.img_path());
+        images.update_window(self);
         self.images = Some(images);
         Ok(())
     }
