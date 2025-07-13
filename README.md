@@ -55,14 +55,19 @@ On Linux, foximg complies with the [XDG Base Directory specification].
 Binaries for Windows and Debian (hopefully Ubuntu/Mint etc..) are in the Releases section for the
 latest release. Otherwise, build the application from source. 
 
-Building from source requires **CMake** and **Cargo**. On Linux, you'll additionally require developement 
-headers for X11, OpenGL and ALSA. These, and CMake, are prerequisites for Raylib. Check the library's [readme].
+Installing from source requires **GNU Make**, **CMake** and **Cargo**. On Linux, you'll additionally 
+require developement headers for X11, OpenGL and ALSA. These, and CMake, are prerequisites for Raylib. 
+Check the library's [readme].
 
 ```
 git clone https://github.com/bruv1700/foximg.git
 cd foximg
-cargo build --release
+make
+sudo make install
 ```
+
+The Makefle is provided to make installing from source much more convenient. There's absolutely no
+reason to use it other than that. For maintaining/debugging/etc.. just use Cargo directly.
 
 [XDG Base Directory specification]: https://specifications.freedesktop.org/basedir-spec/latest/
 [readme]: https://github.com/raysan5/raylib?tab=readme-ov-file#build-and-installation
